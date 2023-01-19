@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 logger = sphinx.util.logging.getLogger('matlab-domain')
 
 modules = {}
+packages = {}
 
 MAT_DOM = 'sphinxcontrib-matlabdomain'
 __all__ = ['MatObject', 'MatModule', 'MatFunction', 'MatClass',  \

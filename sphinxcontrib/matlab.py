@@ -779,6 +779,9 @@ def setup(app):
     app.add_config_value('matlab_src_dir', None, 'env')
     app.add_config_value('matlab_src_encoding', None, 'env')
     app.add_config_value('matlab_keep_package_prefix', True, 'env')
+    app.add_config_value('matlab_direct_search', False, 'env')
+    app.add_config_value('matlab_relative_src_path', False, 'env')
+
 
     app.registry.add_documenter('mat:module', doc.MatModuleDocumenter)
     app.add_directive_to_domain('mat',

@@ -12,6 +12,7 @@ from .mat_types import (MatModule, MatObject, MatFunction, MatClass, MatProperty
                         MatMethod, MatScript, MatException, MatModuleAnalyzer,
                         MatApplication, modules)
 
+import os
 import re
 import sys
 import traceback
@@ -97,8 +98,18 @@ class MatlabDocumenter(PyDocumenter):
 
         Returns True if successful, False if an error occurred.
         """
-        # get config_value with absolute path to MATLAB source files
-        basedir = self.env.config.matlab_src_dir
+        
+        if self.env.config.matlab_relative_src_path:
+            # Get relative path with respect to reporting source file
+            basedir = os.path.split(self.directive._reporter.source)[0]
+        else:
+            # get config_value with absolute path to MATLAB source files
+            basedir = self.env.config.matlab_src_dir
+
+        if self.modname == "*":
+            # Direct search is enabled. Module is equal to src folder. 
+            (basedir, self.modname) = os.path.split(basedir)
+
         MatObject.basedir = basedir  # set MatObject base directory
         MatObject.sphinx_env = self.env  # pass env to MatObject cls
         MatObject.sphinx_app = self.env.app  # pass app to MatObject cls
@@ -120,9 +131,16 @@ class MatlabDocumenter(PyDocumenter):
                 obj = self.get_attr(obj, part)
                 logger.debug('[sphinxcontrib-matlabdomain] => %r', obj)
                 self.object_name = part
-            self.parent = parent
-            self.object = obj
-            return True
+
+            if obj:
+                self.parent = parent
+                self.object = obj
+                return True
+            else:
+                errmsg = '[sphinxcontrib-matlabdomain]: could not find %s %r in module %r' % \
+                         (self.objtype, '.'.join(self.objpath), self.modname)
+                logger.warning(errmsg)
+                return False
         # this used to only catch SyntaxError, ImportError and AttributeError,
         # but importing modules with side effects can raise all kinds of errors
         except Exception:
@@ -611,6 +629,9 @@ class MatModuleLevelDocumenter(MatlabDocumenter):
                 # ... or in the scope of a module directive
                 if not modname:
                     modname = self.env.temp_data.get('mat:module')
+
+                if not modname and self.env.config.matlab_direct_search:
+                    modname = "*"
                 # ... else, it stays None, which means invalid
         return modname, parents + [base]
 
