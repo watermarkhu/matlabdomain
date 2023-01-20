@@ -11,12 +11,11 @@
 from io import open  # for opening files with encoding in Python 2
 import os
 import re
-import sys
-from copy import copy
 import sphinx.util
-from sphinxcontrib.mat_lexer import MatlabLexer
-from pygments.token import Token
+from copy import copy
 from zipfile import ZipFile
+from pygments.token import Token
+from .mat_lexer import MatlabLexer
 import xml.etree.ElementTree as ET
 
 logger = sphinx.util.logging.getLogger('matlab-domain')

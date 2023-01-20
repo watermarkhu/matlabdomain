@@ -14,7 +14,6 @@ from .mat_types import (MatModule, MatObject, MatFunction, MatClass, MatProperty
 
 import os
 import re
-import sys
 import traceback
 import inspect
 
@@ -33,6 +32,7 @@ from sphinx.ext.autodoc import py_ext_sig_re as mat_ext_sig_re, \
     ExceptionDocumenter as PyExceptionDocumenter, \
     DataDocumenter as PyDataDocumenter, \
     MethodDocumenter as PyMethodDocumenter
+
 
 mat_ext_sig_re = re.compile(
     r'''^ ([+@]?[+@\w.]+::)?            # explicit module name
@@ -69,7 +69,7 @@ class MatlabDocumenter(PyDocumenter):
             explicit_modname, path, base, args, retann = \
                  mat_ext_sig_re.match(self.name).groups()
         except AttributeError:
-            self.directive.warn('invalid signature for auto%s (%r)' %
+            logger.warn('invalid signature for auto%s (%r)' %
                                 (self.objtype, self.name))
             return False
 
@@ -218,7 +218,7 @@ class MatlabDocumenter(PyDocumenter):
                     members.append((mname, self.get_attr(self.object, mname)))
                 except AttributeError:
                     if mname not in analyzed_member_names:
-                        self.directive.warn('missing attribute %s in object %s'
+                        logger.warn('missing attribute %s in object %s'
                                             % (mname, self.fullname))
         elif self.options.inherited_members:
             # safe_getmembers() uses dir() which pulls in members from all
@@ -504,7 +504,7 @@ class MatlabDocumenter(PyDocumenter):
         """
         if not self.parse_name():
             # need a module to import
-            self.directive.warn(
+            logger.warn(
                 'don\'t know which module to import for autodocumenting '
                 '%r (try placing a "module" or "currentmodule" directive '
                 'in the document, or giving an explicit module name)'
@@ -570,7 +570,7 @@ class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):
     def parse_name(self):
         ret = MatlabDocumenter.parse_name(self)
         if self.args or self.retann:
-            self.directive.warn('signature arguments or return annotation '
+            logger.warn('signature arguments or return annotation '
                                 'given for automodule %s' % self.fullname)
         return ret
 
@@ -606,7 +606,7 @@ class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):
                 else:
                     raise AttributeError
             except AttributeError:
-                self.directive.warn(
+                logger.warn(
                     'missing attribute mentioned in :members: or __all__: '
                     'module %s, attribute %s' % (
                     sphinx.util.inspect.safe_getattr(self.object, '__name__', '???'), mname))
