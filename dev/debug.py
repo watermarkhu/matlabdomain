@@ -8,7 +8,7 @@ cwd = Path(__file__).resolve().parent
 
 app = Sphinx(
     srcdir = str(cwd),
-    confdir = str(cwd.parent),
+    confdir = str(cwd),
     outdir = str(cwd / 'build'),
     doctreedir = str(cwd / '.doctrees'),
     buildername = 'html',
