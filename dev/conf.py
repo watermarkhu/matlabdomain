@@ -34,7 +34,7 @@ templates_path = ['_templates']
 exclude_patterns = ['.do_not_publish']
 highlight_language = 'matlab'
 todo_include_todos = True
-pygments_dark_style = "github-dark"
+# pygments_dark_style = "github-dark"
 # pygments_style = "vs"
 
 # -- Options for HTML output -------------------------------------------------

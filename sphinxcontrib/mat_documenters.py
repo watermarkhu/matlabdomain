@@ -34,15 +34,14 @@ from sphinx.ext.autodoc import py_ext_sig_re as mat_ext_sig_re, \
     MethodDocumenter as PyMethodDocumenter
 
 
-mat_ext_sig_re = re.compile(
-    r'''^ ([+@]?[+@\w.]+::)?            # explicit module name
+mat_ext_sig_re = re.compile(            # QUESTION why is it required to have the explicit module name
+    r'''^ ([+@]?[+@\w.]+::)?            # explicit module name 
           ([+@]?[+@\w.]+\.)?            # module and/or class name(s)
           ([+@]?\w+)  \s*               # thing name
           (?: \((.*)\)                  # optional: arguments
            (?:\s* -> \s* (.*))?         #           return annotation
           )? $                          # and nothing more
-          ''', re.VERBOSE)
-
+          ''', re.VERBOSE)              # QUESTION are the optional arguments and return annotation ever used? -> yes in 
 
 # TODO: check MRO's for all classes, attributes and methods!!!
 

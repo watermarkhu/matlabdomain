@@ -606,17 +606,17 @@ class MATLABDomain(Domain):
     name = 'mat'
     label = 'MATLAB'
     object_types = {
-        'function':     ObjType(_('function'),      'func', 'obj'),
-        'data':         ObjType(_('data'),          'data', 'obj'),
-        'class':        ObjType(_('class'),         'class', 'obj'),
-        'exception':    ObjType(_('exception'),     'exc', 'obj'),
-        'method':       ObjType(_('method'),        'meth', 'obj'),
-        'classmethod':  ObjType(_('class method'),  'meth', 'obj'),
-        'staticmethod': ObjType(_('static method'), 'meth', 'obj'),
-        'attribute':    ObjType(_('attribute'),     'attr', 'obj'),
-        'module':       ObjType(_('module'),        'mod', 'obj'),
-        'script':       ObjType(_('script'),        'scpt', 'obj'),
-        'application':  ObjType(_('application'),   'app', 'obj'),
+        'function':     ObjType(_('function'),      'func',     'obj'),
+        'data':         ObjType(_('data'),          'data',     'obj'),
+        'class':        ObjType(_('class'),         'class',    'obj'),
+        'exception':    ObjType(_('exception'),     'exc',      'obj'),
+        'method':       ObjType(_('method'),        'meth',     'obj'),
+        'classmethod':  ObjType(_('class method'),  'meth',     'obj'),
+        'staticmethod': ObjType(_('static method'), 'meth',     'obj'),
+        'attribute':    ObjType(_('attribute'),     'attr',     'obj'),
+        'module':       ObjType(_('module'),        'mod',      'obj'),
+        'script':       ObjType(_('script'),        'scpt',     'obj'),
+        'application':  ObjType(_('application'),   'app',      'obj'),
     }
 
     directives = {
@@ -625,13 +625,13 @@ class MATLABDomain(Domain):
         'class':           MatClasslike,
         'exception':       MatClasslike,
         'method':          MatClassmember,
-        'classmethod':     MatClassmember,
+        'classmethod':     MatClassmember,          # QUESTION Does matlab even have class methods?
         'staticmethod':    MatClassmember,
-        'attribute':       MatClassmember,
-        'module':          MatModule,
-        'currentmodule':   MatCurrentModule,
-        'decorator':       MatDecoratorFunction,
-        'decoratormethod': MatDecoratorMethod,
+        'attribute':       MatClassmember,          # QUESTION matlab's attributes are called properties, python's properties are matlab properties with get and set methods. Is this supported?
+        'module':          MatModule,               
+        'currentmodule':   MatCurrentModule,        # QUESTION do we need both module and currentmodule, what is the difference?
+        'decorator':       MatDecoratorFunction,    # QUESTION does matlab have decorators?
+        'decoratormethod': MatDecoratorMethod,      # QUESTION does matlab have decorator methods?
         'script':          MatModulelevel,
         'application':     MatModulelevel,
     }
