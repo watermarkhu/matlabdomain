@@ -1,4 +1,5 @@
 sphinx >= 4.0.0, < 6.0.0
+pygments == 2.14.0
 sphinxcontrib-mermaid
 sphinx-copybutton
 sphinx-design
