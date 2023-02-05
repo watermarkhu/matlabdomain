@@ -15,7 +15,7 @@ from copy import copy
 from zipfile import ZipFile
 from pygments.token import Token
 from pygments.lexers.matlab import MatlabLexer as MatlabLexer
-from .mat_lexer import MatlabLexer as CustomMatlabLexer
+# from .mat_lexer import MatlabLexer as MatlabLexer
 from .regex import code_preprocess
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
@@ -30,8 +30,6 @@ MAT_DOM = 'sphinxcontrib-matlabdomain'
 __all__ = ['MatObject', 'MatModule', 'MatFunction', 'MatClass',  \
            'MatProperty', 'MatMethod', 'MatScript', 'MatException', \
            'MatModuleAnalyzer', 'MatApplication', 'MAT_DOM']
-
-# TODO: use `self.tokens.pop()` instead of idx += 1, see MatFunction
 
 # XXX: Don't use `type()` or metaclasses. Not trivial to create metafunctions.
 # XXX: Some special attributes **are** required even though `getter()` methods
@@ -337,109 +335,24 @@ class MatModule(MatObject):
                 super().getter(name, *defargs)
 
 
-class MatMixin(object):
-    """
-    Methods to comparing and manipulating tokens in :class:`MatFunction` and
-    :class:`MatClass`.
-    """
-    def _tk_eq(self, idx, token):
-        """
-        Returns ``True`` if token keys are the same and values are equal.
-
-        :param idx: Index of token in :class:`MatObject`.
-        :type idx: int
-        :param token: Comparison token.
-        :type token: tuple
-        """
-        return (self.tokens[idx][0] is token[0] and
-                self.tokens[idx][1] == token[1])
-
-    def _tk_ne(self, idx, token):
-        """
-        Returns ``True`` if token keys are not the same or values are not
-        equal.
-
-        :param idx: Index of token in :class:`MatObject`.
-        :type idx: int
-        :param token: Comparison token.
-        :type token: tuple
-        """
-        return (self.tokens[idx][0] is not token[0] or
-                self.tokens[idx][1] != token[1])
-
-    def _eotk(self, idx):
-        """
-        Returns ``True`` if end of tokens is reached.
-        """
-        return idx >= len(self.tokens)
-
-    def _blanks(self, idx):
-        """
-        Returns number of blank text tokens.
-
-        :param idx: Token index.
-        :type idx: int
-        """
-        # idx0 = idx  # original index
-        # while self._tk_eq(idx, (Token.Text, ' ')): idx += 1
-        # return idx - idx0  # blanks
-        return self._indent(idx)
-
-    def _whitespace(self, idx):
-        """
-        Returns number of whitespaces text tokens, including blanks, newline
-        and tabs.
-
-        :param idx: Token index.
-        :type idx: int
-        """
-        # idx0 = idx  # original index
-        # while ((self.tokens[idx][0] is Token.Text or
-        #         self.tokens[idx][0] is Token.Text.Whitespace) and
-        #        self.tokens[idx][1] in [' ', '\n', '\t']):
-        #     idx += 1
-        # return idx - idx0  # whitespace
-        return len(self.token[idx][1]
-                  ) if self.token[idx][0] is Token.Text.Whitespace else 0
-
-    def _indent(self, idx):
-        """
-        Returns indentation tabs or spaces. No indentation is zero.
-
-        :param idx: Token index.
-        :type idx: int
-        """
-        # idx0 = idx  # original index
-        # while (self.tokens[idx][0] is Token.Text and
-        #        self.tokens[idx][1] in [' ', '\t']):
-        #     idx += 1
-        # return idx - idx0  # indentation
-        return self.token[idx][1].count(' ') + self.token[idx][
-            1].count('\t') if self.token[idx][0] is Token.Text.Whitespace else 0
-
-    def _is_newline(self, idx):
-        """ Returns true if the token at index is a newline """
-        return self.tokens[idx][0] in (Token.Text, Token.Text.Whitespace) and self.tokens[idx][1]=='\n'
-
-
-def tks_skip_whitespace(tks: list, skip_semicolon: bool = True, skip_newline: bool = False):
-    """ Eats whitespace from list of tokens """
-    # while tks and (tks[-1][0] is Token.Text.Whitespace or
-    #                tks[-1][0] is Token.Text and tks[-1][1] in [' ', '\t']):
-    #     tks.pop()
-    while tks:
-        if tks[-1][0] is Token.Text.Whitespace:
-            if not skip_newline and '\n' in tks[-1][1]:
-                break
-        elif not skip_semicolon and tks[-1] == (Token.Punctuation, ';'):
-            break
+def tks_next(tks: iter, skip_newline: bool = False, skip_semicolon: bool = True, skip_comment: bool = True):
+    """Iterator for the next token. Returns None if the iterator is empty."""
+    token = next(tks, None)
+    while token:
+        if any(
+            [
+                (token[0] is Token.Text.Whitespace and (skip_newline or '\n' not in token[1])),
+                (token == (Token.Punctuation, ';') and skip_semicolon), 
+                (token[0] is Token.Comment and skip_comment)
+            ]
+        ):
+            token = next(tks, None)
         else:
             break
-        tks.pop()
-    return tks
+    return token
 
 
-def tks_code_literal(tks: list) -> str:
+def tks_code_literal(tks: iter, token: tuple = None):
     """ 
     Returns a literal codestring until 
     1) the literal ends with ','
@@ -450,15 +363,14 @@ def tks_code_literal(tks: list) -> str:
     expected_close = []
     literal = ''
 
-    tks_skip_whitespace(tks, skip_semicolon=False)
-    token = tks.pop()
+    if token is None:
+        token = tks_next(tks, skip_semicolon=False, skip_comment=False)
 
     statement_endings = [','] + list(closing_punctionations.values())
     while expected_close or not any(
         [
-            token[0] is Token.Punctuation and token[1] in statement_endings,
-            token[0] is Token.Text.Whitespace and '\n' in token[1],
-            token[0] is Token.Comment
+            token[0] is Token.Punctuation and token[1] in statement_endings, token[0] is Token.Text.Whitespace and
+            '\n' in token[1], token[0] is Token.Comment
         ]
     ):
         if token[0] is Token.Punctuation and token[1] in closing_punctionations.keys():
@@ -472,14 +384,45 @@ def tks_code_literal(tks: list) -> str:
         # Add to literal, which can have most types
         literal += token[1]
 
-        tks_skip_whitespace(tks, skip_newline=False)
-        token = tks.pop()
-
-    # Always returns a token that is not a whitespace.
-    if token[0] is Token.Text.Whitespace:
-        token = tks.pop()
+        token = tks_next(tks, skip_semicolon=False, skip_comment=False)
 
     return literal, token
+
+
+def tks_docstring(tks: iter, token: tuple, header: str = ''):
+    """
+    The token parser for docstrings.
+
+    A docstring is considered consecutive lines of comments that start at the same location on line. 
+    Any consistent leading spaces after the comment marker % is removed. 
+    """
+    indent = None
+    doc_lines = []
+    while token and token[0] is Token.Comment:
+        comment = token[1].lstrip('%').rstrip()
+        doc_lines.append(comment)
+        token = tks_next(tks, skip_comment=False)
+        if token[0] is Token.Text.Whitespace and '\n' in token[1]:
+            line_indent = token[1].split('\n')[-1]
+            if indent is not None and indent != line_indent:
+                token = tks_next(tks, skip_newline=True, skip_comment=True)
+                break
+            indent = token[1].split('\n')[-1]
+            token = tks_next(tks, skip_comment=False)
+
+    # Join string and remove leading spaces
+    if doc_lines:
+        num_leading_space = 0
+        while True:
+            if not all([line[num_leading_space] == ' ' for line in doc_lines if line]):
+                break
+            num_leading_space += 1
+        docstring = '\n'.join(
+            [line[num_leading_space:] if len(line) > num_leading_space + 1 else '' for line in doc_lines]
+        )
+        if header:
+            docstring = f"{header} {docstring}"
+        return docstring, token
 
 
 class propertyLine(object):
@@ -490,57 +433,53 @@ class propertyLine(object):
 
     The 'Prop' token is already removed from the token list and used for the constructor. 
     """
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, attrs: dict = {}) -> None:
         self.name = name
+        self.attrs = attrs
 
-    def parse_tokens(self, tks: list):
+    def parse_tokens(self, tks: iter):
         """
         Parses a list of tokens starting from after the property name. 
         """
-        tks_skip_whitespace(tks)
-        token = tks.pop()
+        token = tks_next(tks)
 
         # Property size
         if token == (Token.Punctuation, '('):
             self.size = []
-            while tks and token != (Token.Punctuation, ')'):
-                tks_skip_whitespace(tks)
-                token = tks.pop()
+            token = tks_next(tks)
+            while token and token != (Token.Punctuation, ')'):
                 if token[0] is Token.Literal.Number.Integer:
                     self.size.append(int(token[1]))
-            else:
-                tks.pop()
+                token = tks_next(tks)
         else:
             self.size = None
 
-        tks_skip_whitespace(tks)
-        token = tks.pop()
+        token = tks_next(tks)
 
         # property type
         if token[0] is Token.Name.Builtin or token[0] is Token.Name:
             self.type = token[1]
-            tks_skip_whitespace(tks)
-            token = tks.pop()
+            token = tks_next(tks)
         else:
             self.type = None
 
         # validators
         if token == (Token.Punctuation, '{'):
-            self.validators = []
-            while tks and token != (Token.Punctuation, '}'):
+            self.vldtrs = []
+            token = tks_next(tks)
+            while token and token != (Token.Punctuation, '}'):
                 try:
                     validator, token = tks_code_literal(tks)
-                    self.validators.append(validator)
+                    self.vldtrs.append(validator)
                 except IndexError:
                     msg = f'[{MAT_DOM}] Parsing failed in {self.__class__.__name__} {self.name}.'
                     msg += ' Are you sure the validator statement is correct?'
                     logger.warning(msg)
                     raise IndexError
         else:
-            self.validators = None
+            self.vldtrs = None
 
-        tks_skip_whitespace(tks)
-        token = tks.pop()
+        token = tks_next(tks, skip_comment=False)
 
         # Default value
         if token == (Token.Punctuation, '='):
@@ -548,18 +487,13 @@ class propertyLine(object):
         else:
             self.default = None
 
-        # Remove semicolons
-        if token == (Token.Punctuation, ';'):
-            tks_skip_whitespace(tks)
-            token = tks.pop()
+        # Direct docstring
+        self.docstring = token[1].strip('% ') if token[0] is Token.Comment else ''
+        token = tks_next(tks, skip_newline=True, skip_comment=False)
 
-        # Description
-        description_lines = []
-        while token[0] is Token.Comment:
-            description_lines.append(token[1].strip('% '))
-            tks_skip_whitespace(tks)
-            token = tks.pop()
-        self.description = ' '.join(description_lines) if description_lines else None
+        # Newline docstring
+        if token[0] is Token.Comment:
+            self.docstring, token = tks_docstring(tks, token, self.docstring)
 
         return token
 
@@ -568,11 +502,13 @@ class propertyLine(object):
 
     def to_dict(self):
         return {
+            'name': self.name,
             'size': self.size,
             'type': self.type,
-            'validators': self.validators,
+            'vldtrs': self.vldtrs,
             'default': self.default,
-            'description': self.description
+            'docstring': self.docstring,
+            'attrs': self.attrs
         }
 
 
@@ -581,57 +517,105 @@ class argumentLine(propertyLine):
 
 
 class attributeBlock(ABC):
-    attribute_types = {}
-    member_type = None
+    '''
+    Abstract type for block objects that has (MATLAB) attribute descriptions. 
 
-    def __init__(self, tks: list):
+    Extensions to the abstract type must define all possible attributes for the block in the (python) class
+    attribute `attribute_types`, a dictionary containing key-value pairs for the (MATLAB) attribute names 
+    and their value types. 
+    '''
+    attribute_types = {}
+
+    def __init__(self, tks: iter):
 
         self.attributes = {}
 
-        tks_skip_whitespace(tks, skip_semicolon=True)
-        token = tks.pop()
+        token = tks_next(tks)
 
         # Get attributes
         if token == (Token.Punctuation, '('):
-            while tks and token != (Token.Punctuation, ')'):
-                tks_skip_whitespace(tks)
-                token = tks.pop()
+            token = tks_next(tks)
+            while token and token != (Token.Punctuation, ')'):
                 if token[0] is Token.Name:
                     if token[1] in self.attribute_types.keys():
                         if self.attribute_types[token[1]] is bool:
                             self.attributes[token[1]] = True
                         elif self.attribute_types[token[1]] is list:
                             pass
-        tks_skip_whitespace(tks)
+                    else:
+                        msg = f'[{MAT_DOM}] Unsupported attribute {token[0]} for {self.__class__.__name__}.'
+                        logger.warning(msg)
+                token = tks_next(tks)
 
 
-class argumentsBlock(attributeBlock):
+class functionArgumentsBlock(attributeBlock):
+    '''
+    Arguments block for functions.
+
+    Loops over the items in a arguments block in a function and parses each argument 
+    with an argumentLine object. 
+    '''
     attribute_types = {"Input": bool, "Output": bool, "Repeating": bool}
 
-    def __init__(self, tks: list, args: list):
+    def __init__(self, tks: iter, args: list, retv: list):
         super().__init__(tks)
-        self.arguments = {}
+        if self.attributes.get('Input', False) or not self.attributes.get('Output', False):
+            self.arg_list, self.type = args, 'Input'
+        else:
+            self.arg_list, self.type = retv, 'Output'
+        self.repeating = self.attributes.get('Repeating', False)
 
         # Get arguments
-        token = tks.pop()
-        while tks and token != (Token.Keyword, 'end'):
+        self.arguments = []
+        self.parse_tokens(tks)
+
+    def parse_tokens(self, tks: iter):
+        token = tks_next(tks, skip_newline=True)
+        while token and token != (Token.Keyword, 'end'):
             if token[0] is Token.Name:
-                if token[1] in args:
-                    arg = token[1]
-                    argument = argumentLine(arg)
+                if token[1] in self.arg_list:
+                    argument = argumentLine(token[1], self.attributes)
                     token = argument.parse_tokens(tks)
-                    self.arguments[arg] = argument.to_dict()
+                    self.arguments.append(argument)
                 else:
-                    msg = f'[{MAT_DOM}] Parsing failed in {self.__class__.__name__} {self.name}.'
-                    msg += f' Argument  "{token[1]}" is unknown.'
+                    msg = f'[{MAT_DOM}] Parsing failed in {self}.'
+                    msg += f' {self.type} argument "{token[1]}" is unknown.'
                     logger.warning(msg)
                     raise IndexError
             else:
-                tks_skip_whitespace(tks)
-                token = tks.pop()
+                token = tks_next(tks, skip_newline=True)
 
     def __repr__(self) -> str:
-        return f'<argumentsBlock [{", ".join([arg for arg in self.arguments.keys()])}]>'
+        return f'<argumentsBlock [{", ".join([arg.name for arg in self.arguments])}]>'
+
+
+class methodArgumentsBlock(functionArgumentsBlock):
+    '''
+    Arguments block for class method.
+
+    Inherits from functionArgumentsBlock, but now skips the first argument as it is the class
+    object itself.
+    '''
+    def parse_tokens(self, tks: list):
+        first_obj_arg = True
+        token = tks_next(tks, skip_newline=True)
+        while token and token != (Token.Keyword, 'end'):
+            if token[0] is Token.Name:
+                if first_obj_arg:
+                    first_obj_arg = False
+                    continue
+                if token[1] in self.arg_list:
+                    arg = token[1]
+                    argument = argumentLine(token[1], self.attributes)
+                    token = argument.parse_tokens(tks)
+                    self.arguments.append(argument)
+                else:
+                    msg = f'[{MAT_DOM}] Parsing failed in {self}.'
+                    msg += f' {self.type} argument "{token[1]}" is unknown.'
+                    logger.warning(msg)
+                    raise IndexError
+            else:
+                token = tks_next(tks, skip_newline=True)
 
 
 class MatFunction(MatObject):
@@ -656,11 +640,9 @@ class MatFunction(MatObject):
     # =====================================================================
 
     # MATLAB keywords that increment keyword-end pair count
-    mat_kws = list(zip((Token.Keyword,) * 7,
-                  ('arguments', 'for', 'if', 'switch', 'try', 'while', 'parfor')))
+    mat_kws = list(zip((Token.Keyword, ) * 7, ('arguments', 'for', 'if', 'switch', 'try', 'while', 'parfor')))
 
-
-    def warning_msg(self, message : str = ''):
+    def warning_msg(self, message: str = ''):
         msg = f'[{MAT_DOM}] Parsing failed in {self.module}.{self.name}. {message}'
         logger.warning(msg)
 
@@ -671,143 +653,109 @@ class MatFunction(MatObject):
         self.tokens = tokens  #: List of tokens parsed from mfile by Pygments.
         self.docstring = ''  #: docstring
         self.retv = []  #: output args
-        self.retv_va = {}
+        self.retv_va = []
         self.args = []  #: input args
-        self.args_va = {}
-        self.rem_tks = []  #: remaining tokens after main function is parsed
+        self.args_va = []
 
         # =====================================================================
 
-        tks = copy(self.tokens)  # make a copy of tokens
-        tks.reverse()  # reverse in place for faster popping, stacks are LiLo
+        tks = iter(tokens)  # make a copy of tokens
+        next(tks)  # Skip function token
+        token = tks_next(tks)
 
-        try:
-            # Skip function token - already checked in MatObject.parse_mfile
-            tks.pop()
-            tks_skip_whitespace(tks)
+        # =====================================================================
+        # Return values and function name
 
-            # =====================================================================
-            # Return values and function name
+        if token[0] is Token.Text:
+            # Single return value
+            self.retv = [token[1].strip('[ ]')]
+            token = tks_next(tks)
 
-            if tks[-1][0] is Token.Text:
-                # Single return value
-                token = tks.pop()
-                self.retv = [token[1].strip('[ ]')]
-                tks_skip_whitespace(tks)
+            if token != (Token.Punctuation, '='):
+                self.warning('Expected "=".')
+                return
 
-                if tks.pop() != (Token.Punctuation, '='):
-                    self.warning('Expected "=".')
-                    return
-
-                tks_skip_whitespace(tks)
-                token = tks.pop()
-                if token[0] is Token.Name.Function:
-                    func_name = token[1]
-                else:
-                    self.warning()
-                    return
-
-            elif tks[-1][0] is Token.Name.Function:
-                # Multiple return values or no return values
-                token = tks.pop()
-                ret_func = token[1].split('=')
-                if len(ret_func) == 1:
-                    # No return values
-                    func_name = ret_func[0].strip()
-                else:
-                    # Multiple return values
-                    self.retv = [ret.strip() for ret in ret_func[0].strip('[ ]').split(',')]
-                    func_name = ret_func[1].strip()
+            token = tks_next(tks)
+            if token[0] is Token.Name.Function:
+                func_name = token[1]
             else:
                 self.warning()
                 return
 
-            if func_name != self.name:
-                if isinstance(self, MatMethod):  # QUESTION what does this mean?
-                    self.name = func_name
-                else:
-                    self.warning(f'Expected "{name}" in module "{modname}", found "{func_name}".')
+        elif token[0] is Token.Name.Function:
+            # Multiple return values or no return values
+            ret_func = token[1].split('=')
+            if len(ret_func) == 1:
+                # No return values
+                func_name = ret_func[0].strip()
+            else:
+                # Multiple return values
+                self.retv = [ret.strip() for ret in ret_func[0].strip('[ ]').split(',')]
+                func_name = ret_func[1].strip()
+        else:
+            self.warning()
+            return
 
-            # =====================================================================
-            # input args
-            if tks.pop() == (Token.Punctuation, '('):
-                token = tks.pop()
-                if token[0] is Token.Text:
-                    self.args = [arg.strip() for arg in token[1].split(',')]
-                    token = tks.pop()
-                else:
-                    self.warning()
-                    return
+        if func_name != self.name:
+            if isinstance(self, MatMethod):  # QUESTION what does this mean?
+                self.name = func_name
+            else:
+                self.warning(f'Expected "{name}" in module "{modname}", found "{func_name}".')
 
-                if token != (Token.Punctuation, ')'):
-                    self.warning('Expected ")".')
-                    return
+        # =====================================================================
+        # input args
+        token = tks_next(tks)
 
-            tks_skip_whitespace(tks, skip_newline=True)
-
-            # =====================================================================
-            # docstring
-            try:
-                token = tks.pop()
-            except IndexError:
+        if token == (Token.Punctuation, '('):
+            token = tks_next(tks)
+            if token[0] is Token.Text:
+                self.args = [arg.strip() for arg in token[1].split(',')]
+                token = tks_next(tks)
+            else:
+                self.warning()
                 return
 
-            last_leading_spaces = None
-            heading_chars = {'#', '*', '=', '-', '^', '"'}
-            while token and token[0] is Token.Comment:
+            if token == (Token.Punctuation, ')'):
+                token = tks_next(tks)
+            else:
+                self.warning('Expected ")".')
+                return
 
-                comment = token[1].lstrip('%').rstrip()
-                comment_set = set(comment.strip())
-                if len(comment_set) > 1:
-                    # This is a comment line. If the number of leading spaces is the same as the
-                    # previous line, this line is appended to the previous one.
-                    # Otherwise, a newline is added to keep formatting
-                    leading_spaces = len(comment) - len(comment.lstrip())
-                    if last_leading_spaces is not None and leading_spaces != last_leading_spaces:
-                        self.docstring += '\n'
-                    last_leading_spaces = leading_spaces
+        # =====================================================================
+        # docstring
+        token = tks_next(tks, skip_newline=True, skip_comment=False)
+        self.docstring, token = tks_docstring(tks, token)
 
-                    line = comment[1:] if comment[0] == ' ' else comment
-                    self.docstring += line + ' '
+        # =====================================================================
+        # argument validation
+        while token and token == (Token.Name.Builtin, 'arguments'):  
+            # TODO check if argument blocks must be concatenating
 
-                elif len(comment_set) == 1 and list(comment_set)[0] in heading_chars:
-                    # This is a headings line.
-                    line = comment[1:] if comment[0] == ' ' else comment
-                    self.docstring += f'{line}\n' if last_leading_spaces is None else f'\n{line}\n'
+            argblock = functionArgumentsBlock(tks, self.args, self.retv)
+            if argblock.type == 'Input':
+                self.args_va += argblock.arguments
+            else:
+                self.retv_va += argblock.arguments
 
-                else:
-                    # Only spaces, thus this must be two newlines.
-                    self.docstring += '\n\n'
-                    last_leading_spaces = None
+            token = tks_next(tks, skip_newline=True)
 
-                tks_skip_whitespace(tks, skip_newline=True)
-                token = tks.pop()
+        if self.args_va and (
+            len(self.args) != len(self.args_va) or set(self.args) != set([arg.name for arg in self.args_va])
+        ):
+            msg = f'[{MAT_DOM}] Parsing failed in input arguments block of {self.name}.'
+            msg += ' Are you sure the number of arguments match the function signature?'
+            logger.warning(msg)
+        if self.retv_va and (
+            len(self.retv) != len(self.retv_va) or set(self.retv) != set([arg.name for arg in self.retv_va])
+        ):
+            msg = f'[{MAT_DOM}] Parsing failed in output arguments block of {self.name}.'
+            msg += ' Are you sure the number of arguments match the function signature?'
+            logger.warning(msg)
 
-            # =====================================================================
-            # argument validation
+        # =====================================================================
+        # Remainder of function is not checked, nothing of interest
 
-            arg_warn_msg = f'[{MAT_DOM}] Input/Output arguments parsed twice in {modname}.{name}.'
-            while token == (Token.Name.Builtin, 'arguments'):
-                args = argumentsBlock(tks, self.args + self.retv)
-                if 'Input' in args.attributes:
-                    if self.args_va:
-                        logger.warning(arg_warn_msg)
-                    self.args_va = args
-                elif 'Output' in args.attributes:
-                    if self.retv_va:
-                        logger.warning(arg_warn_msg)
-                    self.retv_va = args
-                else:
-                    if self.args_va:
-                        logger.warning(arg_warn_msg)
-                    self.args_va = args
-                tks_skip_whitespace(tks)
-                token = tks.pop()
-
-        except IndexError:
-            self.warning('Check if valid MATLAB code.')
-
-        self.rem_tks = tks  # save extra tokens
+        self.rem_tks = list(tks)  # save extra tokens # TODO remove this altogether?
 
     @property
     def __doc__(self):
@@ -826,6 +774,82 @@ class MatFunction(MatObject):
             return self.__module__
         else:
             super().getter(name, *defargs)
+
+
+class MatMixin(object):
+    """
+    Methods to comparing and manipulating tokens in :class:`MatFunction` and
+    :class:`MatClass`.
+    """
+    def _tk_eq(self, idx, token):
+        """
+        Returns ``True`` if token keys are the same and values are equal.
+        :param idx: Index of token in :class:`MatObject`.
+        :type idx: int
+        :param token: Comparison token.
+        :type token: tuple
+        """
+        return (self.tokens[idx][0] is token[0] and
+                self.tokens[idx][1] == token[1])
+
+    def _tk_ne(self, idx, token):
+        """
+        Returns ``True`` if token keys are not the same or values are not
+        equal.
+        :param idx: Index of token in :class:`MatObject`.
+        :type idx: int
+        :param token: Comparison token.
+        :type token: tuple
+        """
+        return (self.tokens[idx][0] is not token[0] or
+                self.tokens[idx][1] != token[1])
+
+    def _eotk(self, idx):
+        """
+        Returns ``True`` if end of tokens is reached.
+        """
+        return idx >= len(self.tokens)
+
+    def _blanks(self, idx):
+        """
+        Returns number of blank text tokens.
+        :param idx: Token index.
+        :type idx: int
+        """
+        # idx0 = idx  # original index
+        # while self._tk_eq(idx, (Token.Text, ' ')): idx += 1
+        # return idx - idx0  # blanks
+        return self._indent(idx)
+
+    def _whitespace(self, idx):
+        """
+        Returns number of whitespaces text tokens, including blanks, newline
+        and tabs.
+        :param idx: Token index.
+        :type idx: int
+        """
+        idx0 = idx  # original index
+        while ((self.tokens[idx][0] is Token.Text or
+                self.tokens[idx][0] is Token.Text.Whitespace) and
+               self.tokens[idx][1] in [' ', '\n', '\t']):
+            idx += 1
+        return idx - idx0  # whitespace
+
+    def _indent(self, idx):
+        """
+        Returns indentation tabs or spaces. No indentation is zero.
+        :param idx: Token index.
+        :type idx: int
+        """
+        idx0 = idx  # original index
+        while (self.tokens[idx][0] is Token.Text and
+               self.tokens[idx][1] in [' ', '\t']):
+            idx += 1
+        return idx - idx0  # indentation
+
+    def _is_newline(self, idx):
+        """ Returns true if the token at index is a newline """
+        return self.tokens[idx][0] in (Token.Text, Token.Text.Whitespace) and self.tokens[idx][1]=='\n'
 
 
 class MatClass(MatMixin, MatObject):
@@ -1395,7 +1419,209 @@ class MatProperty(MatObject):
         return self.docstring
 
 
-class MatMethod(MatFunction):
+def skip_whitespace(tks):
+    """ Eats whitespace from list of tokens """
+    while tks and (tks[-1][0] == Token.Text.Whitespace or
+                   tks[-1][0] == Token.Text and tks[-1][1] in [' ', '\t']):
+        tks.pop()
+
+
+class MatFunctionOld(MatObject):
+    """
+    A MATLAB function.
+    :param name: Name of :class:`MatObject`.
+    :type name: str
+    :param modname: Name of folder containing :class:`MatObject`.
+    :type modname: str
+    :param tokens: List of tokens parsed from mfile by Pygments.
+    :type tokens: list
+    """
+    # MATLAB keywords that increment keyword-end pair count
+    mat_kws = list(zip((Token.Keyword,) * 7,
+                  ('arguments', 'for', 'if', 'switch', 'try', 'while', 'parfor')))
+
+    def __init__(self, name, modname, tokens):
+        super(MatFunctionOld, self).__init__(name)
+        #: Path of folder containing :class:`MatObject`.
+        self.module = modname
+        #: List of tokens parsed from mfile by Pygments.
+        self.tokens = tokens
+        #: docstring
+        self.docstring = ''
+        #: output args
+        self.retv = None
+        #: input args
+        self.args = None
+        #: remaining tokens after main function is parsed
+        self.rem_tks = None
+        # =====================================================================
+        # parse tokens
+        # XXX: Pygments always reads MATLAB function signature as:
+        # [(Token.Keyword, 'function'),  # any whitespace is stripped
+        #  (Token.Text.Whitesapce, ' '),  # spaces and tabs are concatenated
+        #  (Token.Text, '[o1, o2]'),  # if there are outputs, they're all
+        #                               concatenated w/ or w/o brackets and any
+        #                               trailing whitespace
+        #  (Token.Punctuation, '='),  # possibly an equal sign
+        #  (Token.Text.Whitesapce, ' '),  # spaces and tabs are concatenated
+        #  (Token.Name.Function, 'myfun'),  # the name of the function
+        #  (Token.Punctuation, '('),  # opening parenthesis
+        #  (Token.Text, 'a1, a2',  # if there are args, they're concatenated
+        #  (Token.Punctuation, ')'),  # closing parenthesis
+        #  (Token.Text.Whitesapce, '\n')]  # all whitespace after args
+        # XXX: Pygments does not tolerate MATLAB continuation ellipsis!
+        tks = copy(self.tokens)  # make a copy of tokens
+        tks.reverse()  # reverse in place for faster popping, stacks are LiLo
+        try:
+            # =====================================================================
+            # parse function signature
+            # function [output] = name(inputs)
+            # % docstring
+            # =====================================================================
+            # Skip function token - already checked in MatObject.parse_mfile
+            tks.pop()
+            skip_whitespace(tks)
+
+            #  Check for return values
+            retv = tks.pop()
+            if retv[0] is Token.Text:
+                self.retv = [rv.strip() for rv in retv[1].strip('[ ]').split(',')]
+                if len(self.retv) == 1:
+                    # check if return is empty
+                    if not self.retv[0]:
+                        self.retv = None
+                    # check if return delimited by whitespace
+                    elif ' ' in self.retv[0] or '\t' in self.retv[0]:
+                        self.retv = [rv for rv_tab in self.retv[0].split('\t')
+                                     for rv in rv_tab.split(' ')]
+                if tks.pop() != (Token.Punctuation, '='):
+                    # Unlikely to end here. But never-the-less warn!
+                    msg = '[sphinxcontrib-matlabdomain] Parsing failed in {}.{}. Expected "=".'.format(modname, name)
+                    logger.warning(msg)
+                    return
+
+                skip_whitespace(tks)
+            elif retv[0] is Token.Name.Function:
+                tks.append(retv)
+            # =====================================================================
+            # function name
+            func_name = tks.pop()
+            func_name = (func_name[0], func_name[1].strip(' ()'))  # Strip () in case of dummy arg
+            if func_name != (Token.Name.Function, self.name):  # @UndefinedVariable
+                if isinstance(self, MatMethod):
+                    self.name = func_name[1]
+                else:
+                    msg = '[sphinxcontrib-matlabdomain] Unexpected function name: "%s".' % func_name[1]
+                    msg += ' Expected "{}" in module "{}".'.format(name, modname)
+                    logger.warning(msg)
+
+            # =====================================================================
+            # input args
+            if tks.pop() == (Token.Punctuation, '('):
+                args = tks.pop()
+                if args[0] is Token.Text:
+                    self.args = [arg.strip() for arg in args[1].split(',')]\
+                # no arguments given
+
+
+
+
+                elif args == (Token.Punctuation, ')'):
+                    # put closing parenthesis back in stack
+                    tks.append(args)
+                # check if function args parsed correctly
+                if tks.pop() != (Token.Punctuation, ')'):
+                    # Unlikely to end here. But never-the-less warn!
+                    msg = '[sphinxcontrib-matlabdomain] Parsing failed in {}.{}. Expected ")".'.format(modname, name)
+                    logger.warning(msg)
+                    return
+
+            skip_whitespace(tks)
+            # =====================================================================
+            # docstring
+            try:
+                docstring = tks.pop()
+            except IndexError:
+                docstring = None
+            while docstring and docstring[0] is Token.Comment:
+                self.docstring += docstring[1].lstrip('%')
+                # Get newline if it exists and append to docstring
+                try:
+                    wht = tks.pop()  # We expect a newline
+                except IndexError:
+                    break
+                if wht[0] in (Token.Text, Token.Text.Whitespace) and wht[1] == '\n':
+                    self.docstring += '\n'
+                # Skip whitespace
+                try:
+                    wht = tks.pop()  # We expect a newline
+                except IndexError:
+                    break
+                while wht in list(zip((Token.Text,) * 3, (' ', '\t'))):
+                    try:
+                        wht = tks.pop()
+                    except IndexError:
+                        break
+                docstring = wht  # check if Token is Comment
+            # =====================================================================
+            # Is this code even used?
+            # main body
+            # find Keywords - "end" pairs
+            if docstring is None:
+                return
+            kw = docstring  # last token
+            lastkw = 0  # set last keyword placeholder
+            kw_end = 1  # count function keyword
+            while kw_end > 0:
+                # increment keyword-end pairs count
+                if kw in MatFunction.mat_kws:
+                    kw_end += 1
+                # nested function definition
+                elif kw[0] is Token.Keyword and kw[1].strip() == 'function':
+                    kw_end += 1
+                # decrement keyword-end pairs count but
+                # don't decrement `end` if used as index
+                elif kw == (Token.Keyword, 'end') and not lastkw:
+                    kw_end -= 1
+                # save last punctuation
+                elif kw in list(zip((Token.Punctuation,) * 2, ('(', '{'))):
+                    lastkw += 1
+                elif kw in list(zip((Token.Punctuation,) * 2, (')', '}'))):
+                    lastkw -= 1
+                try:
+                    kw = tks.pop()
+                except IndexError:
+                    break
+            tks.append(kw)  # put last token back in list
+        except IndexError:
+            msg = '[sphinxcontrib-matlabdomain] Parsing failed in {}.{}. Check if valid MATLAB code.'.format(
+                modname, name)
+            logger.warning(msg)
+        # if there are any tokens left save them
+        if len(tks) > 0:
+            self.rem_tks = tks  # save extra tokens
+
+    @property
+    def __doc__(self):
+        return self.docstring
+
+    @property
+    def __module__(self):
+        return self.module
+
+    def getter(self, name, *defargs):
+        if name == '__name__':
+            return self.__name__
+        elif name == '__doc__':
+            return self.__doc__
+        elif name == '__module__':
+            return self.__module__
+        else:
+            super(MatFunctionOld, self).getter(name, *defargs)
+
+
+
+class MatMethod(MatFunctionOld):
     def __init__(self, modname, tks, cls, attrs):
         # set name to None
         super().__init__(None, modname, tks)
@@ -1432,7 +1658,7 @@ class MatScript(MatObject):
 
         tks = copy(self.tokens)  # make a copy of tokens
         tks.reverse()  # reverse in place for faster popping, stacks are LiLo
-        tks_skip_whitespace(tks)
+        tks_next(tks)
         # =====================================================================
         # docstring
         try:

@@ -11,7 +11,7 @@ function [output] = lev_doc_example_function(arg1, arg2 )
     % arg2 : logical
     %   The second argument
     %   
-    % Returns
+     % Returns
     % -------
     % output : float
     %   The output variable
