@@ -1,4 +1,4 @@
-function [output] = lev_doc_example_function(arg1, arg2 )
+function [output, output2] = lev_doc_example_function(arg1, arg2 )
     % The example documentation for a function. 
     %     
     % In the second paragraph and on, a more elaborate explanation of the function
@@ -11,9 +11,11 @@ function [output] = lev_doc_example_function(arg1, arg2 )
     % arg2 : logical
     %   The second argument
     %   
-     % Returns
+    % Returns
     % -------
     % output : float
+    %   The output variable
+    % output2 : logical
     %   The output variable
 
     arguments (Input)
@@ -25,6 +27,7 @@ function [output] = lev_doc_example_function(arg1, arg2 )
 
     arguments(Output, Repeating)
         output (1,1) float {MustBeInteger};
+        output2 logical; % Second output
     end
 
     disp(arg1)

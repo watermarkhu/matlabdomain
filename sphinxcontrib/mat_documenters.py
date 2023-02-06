@@ -32,6 +32,8 @@ from sphinx.ext.autodoc import py_ext_sig_re as mat_ext_sig_re, \
     ExceptionDocumenter as PyExceptionDocumenter, \
     DataDocumenter as PyDataDocumenter, \
     MethodDocumenter as PyMethodDocumenter
+from pygments.lexers.markup import RstLexer
+from pygments.token import Token
 
 
 mat_ext_sig_re = re.compile(            # QUESTION why is it required to have the explicit module name
@@ -184,14 +186,24 @@ class MatlabDocumenter(PyDocumenter):
                 # append at least a dummy docstring, so that the event
                 # autodoc-process-docstring is fired and can add some
                 # content if desired
-                docstrings.append([])
-            for i, line in enumerate(self.process_doc(docstrings)):
+                docstrings = [[]]
+            processed_doc = list(self.process_doc(docstrings))
+            
+            for i, line in enumerate(self.add_object_contents(processed_doc)):
                 self.add_line(line, sourcename, i)
 
         # add additional content (e.g. from document), if present
         if more_content:
             for line, src in zip(more_content.data, more_content.items):
                 self.add_line(line, src[0], src[1])
+
+
+    def add_object_contents(self, doc: list):
+        """
+        Can be used to alter the processed docstring per documenter.
+        """
+        return doc
+
 
     def get_object_members(self, want_all):
         """Return `(members_check_module, members)` where `members` is a
@@ -736,6 +748,101 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
 
     def document_members(self, all_members=False):
         pass
+
+    def add_object_contents(self, doc: list):
+        
+        tks = RstLexer().get_tokens('\n'.join(doc)) if doc else None
+        
+        newDoc, line = [], ''
+
+        token = next(tks, None)
+
+        # Add lines until first field is encountered
+        while token and token[0] is not Token.Name.Class:
+            if token == (Token.Text.Whitespace, '\n'):
+                newDoc.append(line)
+                line = ''
+            else:
+                line += token[1]
+            token = next(tks, None)
+
+        fields_to_skip = []
+
+        # Add documentation via argument (Input) block
+        if self.object.args_va:
+            if newDoc[-1] != '':
+                newDoc.append('')
+            
+            for argument in self.object.args_va:
+                arg = argument.to_dict()
+
+                # Add docstring
+                docstring = arg["docstring"]
+                if docstring[-1] not in ['.', '!']:
+                    docstring += '.'
+                if arg["default"]:
+                    docstring += f' Defaults to {arg["default"]}'
+                field = f':param {arg["name"]}:'
+                fields_to_skip.append(field)
+                newDoc.append(f'{field} {docstring}')
+
+                # Add typehint
+                if arg["type"]:
+                    type = arg["type"]
+                    if arg["default"]:
+                        type += ', optional'
+                    field = f':type {arg["name"]}:'
+                    fields_to_skip.append(field)
+                    newDoc.append(f'{field} {type}')
+
+                # TODO add other information: size and validators
+                # TODO add indicator for repeating arguments
+            newDoc.append('')
+
+        # Add documentation via argument (Output) block
+        if self.object.retv_va:
+            if newDoc[-1] != '':
+                newDoc.append('')
+
+            for ret_i, return_argument in enumerate(self.object.retv_va):
+
+                arg = return_argument.to_dict()
+                line = '          * ' if ret_i else ':returns: * '
+                line += f'**{arg["name"]}**'
+
+                # Add typehint
+                if arg["type"]:
+                    line += f' (*{arg["type"]}*)'
+
+                if arg["docstring"]:
+                    line += f' -- {arg["docstring"]}'
+
+                newDoc.append(line)
+                # TODO add other information: size and validators
+
+            newDoc.append('')
+            fields_to_skip.append(':returns:')
+
+        # Add back remaining tokens
+        skip_to_next_field = False
+        while token:
+            # Skip argument and return fields if added in argument blocks
+            if token[0] is Token.Name.Class:
+                skip_to_next_field = True if token[1] in fields_to_skip else False
+            if skip_to_next_field:
+                token = next(tks, None)
+                continue
+                
+            if token == (Token.Text.Whitespace, '\n'):
+                newDoc.append(line)
+                line = ''
+            else:
+                line += token[1]
+            token = next(tks, None)
+
+        return newDoc
+
+
 
 
 def make_baseclass_links(obj):

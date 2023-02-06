@@ -1,3 +1,6 @@
+Algorithm flow
+--------------
+
 ```{mermaid}
 flowchart
  subgraph "main"

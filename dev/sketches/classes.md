@@ -1,3 +1,6 @@
+Classes 
+-------
+
 ```{mermaid}
 classDiagram
  class sphinxApplication {

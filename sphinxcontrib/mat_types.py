@@ -19,6 +19,7 @@ from pygments.lexers.matlab import MatlabLexer as MatlabLexer
 from .regex import code_preprocess
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
+from typing import Tuple, Generator
 
 
 logger = sphinx.util.logging.getLogger('matlab-domain')
@@ -171,17 +172,18 @@ class MatObject(object):
 
         # Preprocessing the codestring
         code = code_preprocess(full_code)
-        tks = list(MatlabLexer().get_tokens(code))
+        tks = MatlabLexer().get_tokens(code)
+        token = next(tks)
 
-        if tks[0] == (Token.Keyword, 'classdef') :
+        if token == (Token.Keyword, 'classdef') :
             logger.debug('[%s] parsing classdef %s from %s.', MAT_DOM, name, modname)
             return MatClass(name, modname, tks)
-        elif tks[0] == (Token.Keyword, 'function'):
+        elif token == (Token.Keyword, 'function'):
             logger.debug('[%s] parsing function %s from %s.', MAT_DOM, name, modname)
             return MatFunction(name, modname, tks)
         else:
             # it's a script file retoken with header comment
-            tks = list(MatlabLexer().get_tokens(full_code))
+            tks = MatlabLexer().get_tokens(full_code)
             return MatScript(name, modname, tks)
 
 
@@ -335,7 +337,7 @@ class MatModule(MatObject):
                 super().getter(name, *defargs)
 
 
-def tks_next(tks: iter, skip_newline: bool = False, skip_semicolon: bool = True, skip_comment: bool = True):
+def tks_next(tks: Generator, skip_newline: bool = False, skip_semicolon: bool = True, skip_comment: bool = True):
     """Iterator for the next token. Returns None if the iterator is empty."""
     token = next(tks, None)
     while token:
@@ -352,7 +354,7 @@ def tks_next(tks: iter, skip_newline: bool = False, skip_semicolon: bool = True,
     return token
 
 
-def tks_code_literal(tks: iter, token: tuple = None):
+def tks_code_literal(tks: Generator, token: tuple = None):
     """ 
     Returns a literal codestring until 
     1) the literal ends with ','
@@ -389,7 +391,7 @@ def tks_code_literal(tks: iter, token: tuple = None):
     return literal, token
 
 
-def tks_docstring(tks: iter, token: tuple, header: str = ''):
+def tks_docstring(tks: Generator, token: tuple, header: str = ''):
     """
     The token parser for docstrings.
 
@@ -437,11 +439,11 @@ class propertyLine(object):
         self.name = name
         self.attrs = attrs
 
-    def parse_tokens(self, tks: iter):
+    def parse_tokens(self, tks: Generator):
         """
         Parses a list of tokens starting from after the property name. 
         """
-        token = tks_next(tks)
+        token = tks_next(tks, skip_comment=False)
 
         # Property size
         if token == (Token.Punctuation, '('):
@@ -454,19 +456,18 @@ class propertyLine(object):
         else:
             self.size = None
 
-        token = tks_next(tks)
+        token = tks_next(tks, skip_comment=False)
 
         # property type
         if token[0] is Token.Name.Builtin or token[0] is Token.Name:
             self.type = token[1]
-            token = tks_next(tks)
+            token = tks_next(tks, skip_comment=False)
         else:
             self.type = None
 
         # validators
         if token == (Token.Punctuation, '{'):
             self.vldtrs = []
-            token = tks_next(tks)
             while token and token != (Token.Punctuation, '}'):
                 try:
                     validator, token = tks_code_literal(tks)
@@ -476,10 +477,10 @@ class propertyLine(object):
                     msg += ' Are you sure the validator statement is correct?'
                     logger.warning(msg)
                     raise IndexError
+            else:
+                token = tks_next(tks, skip_comment=False)
         else:
             self.vldtrs = None
-
-        token = tks_next(tks, skip_comment=False)
 
         # Default value
         if token == (Token.Punctuation, '='):
@@ -493,7 +494,8 @@ class propertyLine(object):
 
         # Newline docstring
         if token[0] is Token.Comment:
-            self.docstring, token = tks_docstring(tks, token, self.docstring)
+            docstring, token = tks_docstring(tks, token, self.docstring)
+            self.docstring = ' '.join(docstring.split('\n'))
 
         return token
 
@@ -526,7 +528,7 @@ class attributeBlock(ABC):
     '''
     attribute_types = {}
 
-    def __init__(self, tks: iter):
+    def __init__(self, tks: Generator):
 
         self.attributes = {}
 
@@ -557,7 +559,7 @@ class functionArgumentsBlock(attributeBlock):
     '''
     attribute_types = {"Input": bool, "Output": bool, "Repeating": bool}
 
-    def __init__(self, tks: iter, args: list, retv: list):
+    def __init__(self, tks: Generator, args: list, retv: list):
         super().__init__(tks)
         if self.attributes.get('Input', False) or not self.attributes.get('Output', False):
             self.arg_list, self.type = args, 'Input'
@@ -569,7 +571,7 @@ class functionArgumentsBlock(attributeBlock):
         self.arguments = []
         self.parse_tokens(tks)
 
-    def parse_tokens(self, tks: iter):
+    def parse_tokens(self, tks: Generator):
         token = tks_next(tks, skip_newline=True)
         while token and token != (Token.Keyword, 'end'):
             if token[0] is Token.Name:
@@ -596,7 +598,7 @@ class methodArgumentsBlock(functionArgumentsBlock):
     Inherits from functionArgumentsBlock, but now skips the first argument as it is the class
     object itself.
     '''
-    def parse_tokens(self, tks: list):
+    def parse_tokens(self, tks: Generator):
         first_obj_arg = True
         token = tks_next(tks, skip_newline=True)
         while token and token != (Token.Keyword, 'end'):
@@ -646,11 +648,11 @@ class MatFunction(MatObject):
         msg = f'[{MAT_DOM}] Parsing failed in {self.module}.{self.name}. {message}'
         logger.warning(msg)
 
-    def __init__(self, name, modname, tokens):
+    def __init__(self, name: str, modname: str, tks: Generator):
         super().__init__(name)
 
         self.module = modname  #: Path of folder containing :class:`MatObject`.
-        self.tokens = tokens  #: List of tokens parsed from mfile by Pygments.
+        self.tokens = tks  #: List of tokens parsed from mfile by Pygments.
         self.docstring = ''  #: docstring
         self.retv = []  #: output args
         self.retv_va = []
@@ -659,8 +661,6 @@ class MatFunction(MatObject):
 
         # =====================================================================
 
-        tks = iter(tokens)  # make a copy of tokens
-        next(tks)  # Skip function token
         token = tks_next(tks)
 
         # =====================================================================
