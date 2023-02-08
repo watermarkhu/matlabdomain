@@ -20,6 +20,7 @@ from .regex import code_preprocess
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from typing import Tuple, Generator
+from collections import defaultdict
 
 
 logger = sphinx.util.logging.getLogger('matlab-domain')
@@ -439,11 +440,10 @@ class propertyLine(object):
         self.name = name
         self.attrs = attrs
 
-    def parse_tokens(self, tks: Generator):
+    def parse_tokens(self, tks: Generator, token: tuple):
         """
         Parses a list of tokens starting from after the property name. 
         """
-        token = tks_next(tks, skip_comment=False)
 
         # Property size
         if token == (Token.Punctuation, '('):
@@ -453,10 +453,10 @@ class propertyLine(object):
                 if token[0] is Token.Literal.Number.Integer:
                     self.size.append(int(token[1]))
                 token = tks_next(tks)
+            else:
+                token = tks_next(tks, skip_comment=False)
         else:
             self.size = None
-
-        token = tks_next(tks, skip_comment=False)
 
         # property type
         if token[0] is Token.Name.Builtin or token[0] is Token.Name:
@@ -502,20 +502,21 @@ class propertyLine(object):
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__} of {self.name}>'
 
-    def to_dict(self):
-        return {
-            'name': self.name,
-            'size': self.size,
-            'type': self.type,
-            'vldtrs': self.vldtrs,
-            'default': self.default,
-            'docstring': self.docstring,
-            'attrs': self.attrs
-        }
-
 
 class argumentLine(propertyLine):
-    pass
+    def parse_tokens(self, tks: Generator, token: tuple):
+        if token == (Token.Punctuation, '.'):
+            self.field = next(tks)[1]
+            token = tks_next(tks, skip_comment=False)
+        else:
+            self.field = None
+        return super().parse_tokens(tks, token)
+
+    def __repr__(self) -> str:
+        if self.field:
+            return f'<{self.__class__.__name__} of {self.name}.{self.field}>'
+        else:
+            return super().__repr__()
 
 
 class attributeBlock(ABC):
@@ -568,27 +569,30 @@ class functionArgumentsBlock(attributeBlock):
         self.repeating = self.attributes.get('Repeating', False)
 
         # Get arguments
-        self.arguments = []
+        self.arguments = defaultdict(list)
         self.parse_tokens(tks)
 
     def parse_tokens(self, tks: Generator):
         token = tks_next(tks, skip_newline=True)
+
         while token and token != (Token.Keyword, 'end'):
             if token[0] is Token.Name:
-                if token[1] in self.arg_list:
-                    argument = argumentLine(token[1], self.attributes)
-                    token = argument.parse_tokens(tks)
-                    self.arguments.append(argument)
+                arg = token[1]
+                if arg in self.arg_list:
+                    argument = argumentLine(arg, attrs=self.attributes)
+                    token = tks_next(tks, skip_comment=False)
+                    token = argument.parse_tokens(tks, token)
+                    self.arguments[arg].append(argument)
                 else:
                     msg = f'[{MAT_DOM}] Parsing failed in {self}.'
-                    msg += f' {self.type} argument "{token[1]}" is unknown.'
+                    msg += f' {self.type} argument "{arg}" is unknown.'
                     logger.warning(msg)
                     raise IndexError
             else:
                 token = tks_next(tks, skip_newline=True)
 
     def __repr__(self) -> str:
-        return f'<argumentsBlock [{", ".join([arg.name for arg in self.arguments])}]>'
+        return f'<argumentsBlock [{", ".join(self.arguments.keys())}]>'
 
 
 class methodArgumentsBlock(functionArgumentsBlock):
@@ -603,17 +607,18 @@ class methodArgumentsBlock(functionArgumentsBlock):
         token = tks_next(tks, skip_newline=True)
         while token and token != (Token.Keyword, 'end'):
             if token[0] is Token.Name:
+                arg = token[1]
                 if first_obj_arg:
                     first_obj_arg = False
                     continue
-                if token[1] in self.arg_list:
-                    arg = token[1]
-                    argument = argumentLine(token[1], self.attributes)
-                    token = argument.parse_tokens(tks)
+                if arg in self.arg_list:
+                    argument = argumentLine(arg, self.attributes)
+                    token = tks_next(tks, skip_comment=False)
+                    token = argument.parse_tokens(tks, token)
                     self.arguments.append(argument)
                 else:
                     msg = f'[{MAT_DOM}] Parsing failed in {self}.'
-                    msg += f' {self.type} argument "{token[1]}" is unknown.'
+                    msg += f' {self.type} argument "{arg}" is unknown.'
                     logger.warning(msg)
                     raise IndexError
             else:
@@ -655,9 +660,9 @@ class MatFunction(MatObject):
         self.tokens = tks  #: List of tokens parsed from mfile by Pygments.
         self.docstring = ''  #: docstring
         self.retv = []  #: output args
-        self.retv_va = []
+        self.retv_va = {}
         self.args = []  #: input args
-        self.args_va = []
+        self.args_va = {}
 
         # =====================================================================
 
@@ -733,21 +738,18 @@ class MatFunction(MatObject):
 
             argblock = functionArgumentsBlock(tks, self.args, self.retv)
             if argblock.type == 'Input':
-                self.args_va += argblock.arguments
+                self.args_va.update(argblock.arguments)
             else:
-                self.retv_va += argblock.arguments
+                self.retv_va.update(argblock.arguments)
 
             token = tks_next(tks, skip_newline=True)
 
-        if self.args_va and (
-            len(self.args) != len(self.args_va) or set(self.args) != set([arg.name for arg in self.args_va])
-        ):
+        if self.args_va and (len(self.args) != len(self.args_va)):
             msg = f'[{MAT_DOM}] Parsing failed in input arguments block of {self.name}.'
             msg += ' Are you sure the number of arguments match the function signature?'
             logger.warning(msg)
-        if self.retv_va and (
-            len(self.retv) != len(self.retv_va) or set(self.retv) != set([arg.name for arg in self.retv_va])
-        ):
+
+        if self.retv_va and (len(self.retv) != len(self.retv_va)):
             msg = f'[{MAT_DOM}] Parsing failed in output arguments block of {self.name}.'
             msg += ' Are you sure the number of arguments match the function signature?'
             logger.warning(msg)

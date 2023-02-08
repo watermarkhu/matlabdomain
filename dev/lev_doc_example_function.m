@@ -20,13 +20,14 @@ function [output, output2] = lev_doc_example_function(arg1, arg2 )
 
     arguments (Input)
         arg1 (1,1) double {MustBePositive, MustBeSomething(arg1, 1)} = 1  % This is the comment for arg1
-        arg2 (1,1) logical {MustBeReal} = True                            
+        arg2.field1 (1,1) logical {MustBeReal} = True                            
         % This is the comment for arg2
         % split over multiple lines
+        arg2.field2  = str2double('2') % Theother field
     end
 
-    arguments(Output, Repeating)
-        output (1,1) float {MustBeInteger};
+    arguments(Output)
+        output (1,1) float {MustBeInteger}
         output2 logical; % Second output
     end
 

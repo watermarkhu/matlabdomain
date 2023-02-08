@@ -1,5 +1,5 @@
 Classes 
--------
+=======
 
 ```{mermaid}
 classDiagram

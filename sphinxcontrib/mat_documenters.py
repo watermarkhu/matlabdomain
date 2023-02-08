@@ -750,14 +750,14 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
         pass
 
     def add_object_contents(self, doc: list):
+        # TODO make this optional via directive option
         
+        # Tokenize parsed RST document
         tks = RstLexer().get_tokens('\n'.join(doc)) if doc else None
-        
-        newDoc, line = [], ''
-
-        token = next(tks, None)
+        newDoc, line = [], ''        
 
         # Add lines until first field is encountered
+        token = next(tks, None)
         while token and token[0] is not Token.Name.Class:
             if token == (Token.Text.Whitespace, '\n'):
                 newDoc.append(line)
@@ -773,30 +773,47 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
             if newDoc[-1] != '':
                 newDoc.append('')
             
-            for argument in self.object.args_va:
-                arg = argument.to_dict()
+            for iArg, (argName, args) in enumerate(self.object.args_va.items()):
 
-                # Add docstring
-                docstring = arg["docstring"]
-                if docstring[-1] not in ['.', '!']:
-                    docstring += '.'
-                if arg["default"]:
-                    docstring += f' Defaults to {arg["default"]}'
-                field = f':param {arg["name"]}:'
-                fields_to_skip.append(field)
-                newDoc.append(f'{field} {docstring}')
+                fields_to_skip.append(f':param {argName}:')
+                fields_to_skip.append(f':type {argName}:')
 
-                # Add typehint
-                if arg["type"]:
-                    type = arg["type"]
-                    if arg["default"]:
-                        type += ', optional'
-                    field = f':type {arg["name"]}:'
-                    fields_to_skip.append(field)
-                    newDoc.append(f'{field} {type}')
+                if len(args) > 1:
+                    line = '          * ' if iArg else ':parameters: * '
+                    line += f'{argName} (``struct``)'
+                    newDoc.append(line)
+                    
+                for arg in args:
 
-                # TODO add other information: size and validators
-                # TODO add indicator for repeating arguments
+                    if len(args) == 1:
+                        line = '          * ' if iArg else ':parameters: * '
+                    else:
+                        line = '             * '
+                        fields_to_skip.append(f':param {arg.name}.{arg.field}:')
+                        fields_to_skip.append(f':type {arg.name}.{arg.field}:')
+
+                    line += f'**{argName}.{arg.field}**' if arg.field else f'**{argName}**'
+
+                    # Add typehint
+                    repeating = arg.attrs.get('Repeating', False)
+                    if arg.type or arg.default or repeating:
+                        codeblock = []
+                        if arg.type:
+                            codeblock.append(arg.type)
+                        if arg.default:
+                            codeblock.append('optional')
+                        if repeating:
+                             codeblock.append('repeating')
+                        line += f" (``{', '.join(codeblock)}``)"
+
+                    # Add docstring
+                    if arg.docstring:
+                        line += f' -- {arg.docstring}'
+                        if line[-1] not in ['.', '!']:
+                            line += '.'
+
+                    newDoc.append(line)
+                newDoc.append('')
             newDoc.append('')
 
         # Add documentation via argument (Output) block
@@ -804,22 +821,20 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
             if newDoc[-1] != '':
                 newDoc.append('')
 
-            for ret_i, return_argument in enumerate(self.object.retv_va):
+            for iArg, args in enumerate(self.object.retv_va.values()):
+                arg = args[0]
 
-                arg = return_argument.to_dict()
-                line = '          * ' if ret_i else ':returns: * '
-                line += f'**{arg["name"]}**'
+                line = '          * ' if iArg else ':returns: * '
+                line += f'**{arg.name}**'
 
                 # Add typehint
-                if arg["type"]:
-                    line += f' (*{arg["type"]}*)'
+                if arg.type:
+                    line += f' (``{arg.type}``)'
 
-                if arg["docstring"]:
-                    line += f' -- {arg["docstring"]}'
+                if arg.docstring:
+                    line += f' -- {arg.docstring}'
 
                 newDoc.append(line)
-                # TODO add other information: size and validators
-
             newDoc.append('')
             fields_to_skip.append(':returns:')
 
@@ -841,8 +856,6 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
             token = next(tks, None)
 
         return newDoc
-
-
 
 
 def make_baseclass_links(obj):

@@ -1,5 +1,5 @@
 Algorithm flow
---------------
+==============
 
 ```{mermaid}
 flowchart

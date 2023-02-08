@@ -1,6 +1,7 @@
 .idea/
 .venv/
 .eggs/
+.devcontainer
 __pycache__
 *.pyc
 sphinxcontrib_matlabdomain.egg-info/
@@ -12,4 +13,6 @@ tests/test_docs/_build/
 _build
 htmlcov
 .coverage
+build/
+dist/
 

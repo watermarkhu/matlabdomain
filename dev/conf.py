@@ -7,12 +7,13 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 from datetime import datetime
 import os
-from pathlib import Path
 
 project = 'DEV'
 copyright = f'{datetime.now().year}'
-author = os.getlogin()
-
+try: 
+    author = os.getlogin()
+except OSError:
+    author = "UNKNOWN"
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
