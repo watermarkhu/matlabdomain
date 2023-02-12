@@ -779,9 +779,15 @@ def setup(app):
     app.add_config_value('matlab_src_dir', None, 'env')
     app.add_config_value('matlab_src_encoding', None, 'env')
     app.add_config_value('matlab_keep_package_prefix', True, 'env')
-    app.add_config_value('matlab_direct_search', False, 'env')
-    app.add_config_value('matlab_relative_src_path', False, 'env')
 
+    app.add_config_value('matlab_direct_search', False, 'env')
+    # Search for matlab callables directly from the path of the source document. This allows for the source documentation to live in the same folders as the code in stead of a separate /docs folder containing the source documents. TODO align with stakeholders on this feature. 
+
+    app.add_config_value('matlab_relative_src_path', False, 'env')          
+    # Do not need to specify a module. The folder of the matlab_src_dir will be the main module. TODO this should be removed. 
+
+    app.add_config_value('matlab_argument_docstrings', True, 'env')\
+    # Use the type and docstring in the arguments block in functions and methods. Will overwrite any PARAMETERS/RETURNS block in the function/method docstring. 
 
     app.registry.add_documenter('mat:module', doc.MatModuleDocumenter)
     app.add_directive_to_domain('mat',

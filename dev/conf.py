@@ -51,6 +51,7 @@ primary_domain = 'mat'
 matlab_keep_package_prefix = True
 matlab_direct_search = True
 matlab_relative_src_path = True
+matlab_argument_docstrings = True
 
 # -- Options for Napoleon ---------------------------------------------------- 
 # https://www.sphinx-doc.org/en/master/usage/extensions/napoleon.html

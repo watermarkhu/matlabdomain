@@ -189,7 +189,7 @@ class MatlabDocumenter(PyDocumenter):
                 docstrings = [[]]
             processed_doc = list(self.process_doc(docstrings))
             
-            for i, line in enumerate(self.add_object_contents(processed_doc)):
+            for i, line in enumerate(self.alter_processed_doc(processed_doc)):
                 self.add_line(line, sourcename, i)
 
         # add additional content (e.g. from document), if present
@@ -198,7 +198,7 @@ class MatlabDocumenter(PyDocumenter):
                 self.add_line(line, src[0], src[1])
 
 
-    def add_object_contents(self, doc: list):
+    def alter_processed_doc(self, doc: list):
         """
         Can be used to alter the processed docstring per documenter.
         """
@@ -735,6 +735,9 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
     """
     objtype = 'function'
     member_order = 30
+    option_spec = {
+        'invert-conf-argument-docstring': bool_option
+    }
 
     @classmethod
     def can_document_member(cls, member, membername, isattr, parent):
@@ -749,9 +752,14 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
     def document_members(self, all_members=False):
         pass
 
-    def add_object_contents(self, doc: list):
-        # TODO make this optional via directive option
-        
+    def alter_processed_doc(self, doc: list):
+
+        use_args = self.env.config.matlab_argument_docstrings
+        if self.options.get('invert-conf-argument-docstring', False):
+            use_args = not use_args
+        if not use_args:
+            return doc
+
         # Tokenize parsed RST document
         tks = RstLexer().get_tokens('\n'.join(doc)) if doc else None
         newDoc, line = [], ''        
@@ -759,7 +767,7 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
         # Add lines until first field is encountered
         token = next(tks, None)
         while token and token[0] is not Token.Name.Class:
-            if token == (Token.Text.Whitespace, '\n'):
+            if token == (Token.Text.Whitespace, '\n') or token == (Token.Text, '\n'):
                 newDoc.append(line)
                 line = ''
             else:
@@ -770,7 +778,7 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
 
         # Add documentation via argument (Input) block
         if self.object.args_va:
-            if newDoc[-1] != '':
+            if newDoc and newDoc[-1] != '':
                 newDoc.append('')
             
             for iArg, (argName, args) in enumerate(self.object.args_va.items()):
