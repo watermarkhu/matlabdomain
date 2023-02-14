@@ -1,18 +1,16 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
+from sphinx.testing.fixtures import test_params, make_app
+from sphinx.testing.path import path
 from sphinxcontrib import mat_documenters as doc
-from sphinxcontrib.mat_types import modules
+from sphinxcontrib.mat_types import modules, import_matlab_type
 import os
 import sys
 import pytest
 
-from sphinx.testing.fixtures import test_params, make_app
-from sphinx.testing.path import path
-
 
 rootdir = path(os.path.dirname(__file__)).abspath()
 matlab_src_dir = os.path.join(rootdir, 'test_data')
-doc.MatObject.basedir = matlab_src_dir
 
 
 @pytest.fixture
@@ -20,21 +18,20 @@ def app(make_app):
     # Create app to setup build environment
     srcdir = rootdir / 'test_docs'
     app = make_app(srcdir=srcdir)
-    doc.MatObject.basedir = app.config.matlab_src_dir
     return app
 
 
 @pytest.fixture
 def mod(app):
-    return doc.MatObject.matlabify('test_data')
+    return import_matlab_type('test_data', matlab_src_dir)
 
 
 def test_empty():
-    assert doc.MatObject.matlabify('') is None
+    assert import_matlab_type('', matlab_src_dir) is None
 
 
 def test_unknown():
-    assert doc.MatObject.matlabify('not_test_data') is None
+    assert import_matlab_type('not_test_data', matlab_src_dir) is None
 
 
 def test_script(mod, caplog):
@@ -76,7 +73,7 @@ def test_module(mod):
 
 
 def test_parse_twice(mod):
-    mod2 = doc.MatObject.matlabify('test_data')
+    mod2 = import_matlab_type('test_data', matlab_src_dir)
     assert mod == mod2
 
 

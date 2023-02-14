@@ -52,7 +52,7 @@ flowchart
   ma0 ==> md0
  
   subgraph "MatObject (mat_types)"
-   mo0(matlabify)
+   mo0(import_matlab_type)
   end
   mo0 -.-> datam
   subgraph "MatModuleAnalyzer (mat_types)"

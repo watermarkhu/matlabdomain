@@ -777,7 +777,7 @@ def setup(app):
     app.add_domain(MATLABDomain)
     # autodoc
     app.add_config_value('matlab_src_dir', None, 'env')
-    app.add_config_value('matlab_src_encoding', None, 'env')
+
     app.add_config_value('matlab_keep_package_prefix', True, 'env')
 
     app.add_config_value('matlab_direct_search', False, 'env')
@@ -814,20 +814,15 @@ def setup(app):
                                 'autoscript',
                                 mat_directives.MatlabAutodocDirective)
 
-    app.registry.add_documenter('mat:exception', doc.MatExceptionDocumenter)
-    app.add_directive_to_domain('mat',
-                                'autoexception',
-                                mat_directives.MatlabAutodocDirective)
-
     app.registry.add_documenter('mat:attribute', doc.MatAttributeDocumenter)
     app.add_directive_to_domain('mat',
                                 'autoattribute',
                                 mat_directives.MatlabAutodocDirective)
 
-    app.registry.add_documenter('mat:data', doc.MatDataDocumenter)
-    app.add_directive_to_domain('mat',
-                                'autodata',
-                                mat_directives.MatlabAutodocDirective)
+    # app.registry.add_documenter('mat:data', doc.MatDataDocumenter)
+    # app.add_directive_to_domain('mat',
+    #                             'autodata',
+    #                             mat_directives.MatlabAutodocDirective)
 
     # app.registry.add_documenter('mat:instanceattribute', doc.MatInstanceAttributeDocumenter)
     # app.add_directive_to_domain('mat',

@@ -55,10 +55,6 @@ Additional Configuration
    only one MATLAB path can be specified, but all subfolders in that tree will
    be searched.
 
-``matlab_src_encoding``
-   The encoding of the MATLAB files. By default, the files will be read as utf-8
-   and parsing errors will be replaced using ? chars.
-
 ``matlab_keep_package_prefix``
    Determines if the MATLAB package prefix ``+`` is displayed in the
    generated documentation.  Default is true.  When false, packages are

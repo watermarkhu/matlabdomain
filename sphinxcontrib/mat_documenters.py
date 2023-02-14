@@ -8,9 +8,10 @@
     :copyright: Copyright 2014 Mark Mikofski
     :license: BSD, see LICENSE for details.
 """
-from .mat_types import (MatModule, MatObject, MatFunction, MatClass, MatProperty,
-                        MatMethod, MatScript, MatException, MatModuleAnalyzer,
-                        MatApplication, modules)
+from .mat_types import (
+    MatModule, MatFunction, MatClass, MatProperty, MatMethod, MatScript, MatApplication, 
+    modules, import_matlab_type
+)
 
 import os
 import re
@@ -49,6 +50,78 @@ mat_ext_sig_re = re.compile(            # QUESTION why is it required to have th
 
 
 logger = sphinx.util.logging.getLogger('matlab-domain')
+
+
+class MatcodeError(Exception):
+    def __str__(self):
+        res = self.args[0]
+        if len(self.args) > 1:
+            res += ' (exception was: %r)' % self.args[1]
+        return res
+
+
+class MatModuleAnalyzer(object):
+    # cache for analyzer objects -- caches both by module and file name
+    cache = {}
+
+    @classmethod
+    def for_folder(cls, dirname, modname):
+        if ('folder', dirname) in cls.cache:
+            return cls.cache['folder', dirname]
+        obj = cls(None, modname, dirname)
+        cls.cache['folder', dirname] = obj
+        return obj
+
+    @classmethod
+    def for_module(cls, modname):
+        if ('module', modname) in cls.cache:
+            entry = cls.cache['module', modname]
+            if isinstance(entry, MatcodeError):
+                raise entry
+            return entry
+        mod = modules.get(modname)
+        if mod:
+            obj = cls.for_folder(mod.path, modname)
+        else:
+            err = MatcodeError('error importing %r' % modname)
+            cls.cache['module', modname] = err
+            raise err
+        cls.cache['module', modname] = obj
+        return obj
+
+    def __init__(self, source, modname, srcname):
+        
+        self.modname = modname      # name of the module
+        self.srcname = srcname      # name of the source file
+        self.source = source        # file-like object yielding source lines
+
+        # will be filled by find_attr_docs()
+        self.attr_docs = None
+        self.tagorder = None
+
+    def find_attr_docs(self, scope=''):
+        """Find class and module-level attributes and their documentation."""
+        if self.attr_docs is not None:
+            return self.attr_docs
+        attr_visitor_collected = {}
+        attr_visitor_tagorder = {}
+        tagnumber = 0
+        mod = modules[self.modname]
+        # walk package tree
+        for k, v in mod.safe_getmembers():
+            if hasattr(v, 'docstring'):
+                attr_visitor_collected[mod.package, k] = v.docstring
+                attr_visitor_tagorder[k] = tagnumber
+                tagnumber += 1
+            if isinstance(v, MatClass):
+                for mk, mv in v.getter('__dict__').items():
+                    tagname = '%s.%s' % (k, mk)
+                    attr_visitor_collected[k, mk] = mv.docstring
+                    attr_visitor_tagorder[tagname] = tagnumber
+                    tagnumber += 1
+        self.attr_docs = attr_visitor_collected
+        self.tagorder = attr_visitor_tagorder
+        return attr_visitor_collected
 
 
 class MatlabDocumenter(PyDocumenter):
@@ -111,18 +184,12 @@ class MatlabDocumenter(PyDocumenter):
             # Direct search is enabled. Module is equal to src folder.
             (basedir, self.modname) = os.path.split(basedir)
 
-        MatObject.basedir = basedir  # set MatObject base directory
-        MatObject.sphinx_env = self.env  # pass env to MatObject cls
-        MatObject.sphinx_app = self.env.app  # pass app to MatObject cls
-
-        # sets Matlab src file encoding for parsing
-        MatObject.encoding = self.env.config.matlab_src_encoding
         if self.objpath:
             logger.debug('[sphinxcontrib-matlabdomain] from %s import %s',
                          self.modname, '.'.join(self.objpath))
         try:
             logger.debug('[sphinxcontrib-matlabdomain] import %s', self.modname)
-            MatObject.matlabify(self.modname)
+            import_matlab_type(self.modname, basedir)
             parent = None
             obj = self.module = modules[self.modname]
             logger.debug('[sphinxcontrib-matlabdomain] => %r', obj)
@@ -180,11 +247,11 @@ class MatlabDocumenter(PyDocumenter):
         # add content from docstrings
         if get_doc:
             docstrings = self.get_doc()
-            # append at least a dummy docstring, so that the event autodoc-process-docstring 
+            # append at least a dummy docstring, so that the event autodoc-process-docstring
             # is fired and can add some content if desired
             if not docstrings:
                 docstrings = [[]]
-        
+
         if docstrings and docstrings != [[]]:
             processed_doc = list(self.process_doc(docstrings))
             for i, line in enumerate(self.alter_processed_doc(processed_doc)):
@@ -692,7 +759,7 @@ class MatDocstringSignatureMixin(object):
     feature of reading the signature from the docstring.
     """
 
-    def _find_signature(self, encoding=None):
+    def _find_signature(self):
         docstrings = MatlabDocumenter.get_doc(self)
         if len(docstrings) != 1:
             return
@@ -759,11 +826,11 @@ class MatDocstringSignatureMixin(object):
         fields_to_skip = []
 
         # Add documentation via argument (Input) block
-        if self.object.args_va:
+        if self.object.args_block:
             if newDoc and newDoc[-1] != '':
                 newDoc.append('')
 
-            for iArg, (argName, args) in enumerate(self.object.args_va.items()):
+            for iArg, (argName, args) in enumerate(self.object.args_block.items()):
 
                 fields_to_skip.append(f':param {argName}:')
                 fields_to_skip.append(f':type {argName}:')
@@ -807,11 +874,11 @@ class MatDocstringSignatureMixin(object):
             newDoc.append('')
 
         # Add documentation via argument (Output) block
-        if self.object.retv_va:
+        if self.object.retv_block:
             if newDoc[-1] != '':
                 newDoc.append('')
 
-            for iArg, args in enumerate(self.object.retv_va.values()):
+            for iArg, args in enumerate(self.object.retv_block.values()):
                 arg = args[0]
 
                 line = '          * ' if iArg else ':returns: * '
@@ -964,7 +1031,7 @@ class MatClassDocumenter(MatModuleLevelDocumenter):
             if base_class_links:
                 self.add_line(_('   Bases: %s') % ', '.join(base_class_links), '<autodoc>')
 
-    def get_doc(self, encoding=None):
+    def get_doc(self):
         content = self.env.config.autoclass_content
 
         docstrings = []
@@ -1016,13 +1083,6 @@ class MatClassDocumenter(MatModuleLevelDocumenter):
         if self.doc_as_attr:
             return
         super().document_members(*args, **kwargs)
-
-
-class MatExceptionDocumenter(MatlabDocumenter, PyExceptionDocumenter):
-
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return isinstance(member, MatException)
 
 
 class MatDataDocumenter(MatModuleLevelDocumenter, PyDataDocumenter):

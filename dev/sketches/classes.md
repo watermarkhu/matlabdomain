@@ -79,7 +79,7 @@ classDiagram
 
  class MatObject {
         +__module__
-        +matlabify(objname)
+        +import_matlab_type(objname)
  }
 
  MatlabDocumenter -- MatObject

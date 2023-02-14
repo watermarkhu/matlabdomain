@@ -11,10 +11,10 @@
         - [ ] #Stretch Add size and validators, need to check if required. 
         - [ ] #Stretch add indicator for *repeating* arguments
 
-- [ ] Rewrite unstructed portions
+- [*] Rewrite unstructed portions
     - [*] function parser with generator type
     - [*] class parser with generator type
-    - [ ] `mat_types.py` restructure, divide in submodules per parser type?
+    - [*] `mat_types.py` restructure, divide in submodules per parser type?
 
 
 - Module level changes
