@@ -1,11 +1,11 @@
 
 
 
-- [ ] Add support for parsing inputs and outputs via the arguments block
+- [*] Add support for parsing inputs and outputs via the arguments block
     - Locations
         - [*] In functions
-        - [ ] In class methods
-        - [ ] In class static methods
+        - [*] In class methods
+        - [*] In class static methods
     - Functionality
         - [*] Basic parsing: default value, type, docstring
         - [ ] #Stretch Add size and validators, need to check if required. 
@@ -13,7 +13,7 @@
 
 - [ ] Rewrite unstructed portions
     - [*] function parser with generator type
-    - [ ] class parser with generator type
+    - [*] class parser with generator type
     - [ ] `mat_types.py` restructure, divide in submodules per parser type?
 
 

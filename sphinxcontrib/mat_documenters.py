@@ -43,7 +43,7 @@ mat_ext_sig_re = re.compile(            # QUESTION why is it required to have th
           (?: \((.*)\)                  # optional: arguments
            (?:\s* -> \s* (.*))?         #           return annotation
           )? $                          # and nothing more
-          ''', re.VERBOSE)              # QUESTION are the optional arguments and return annotation ever used? -> yes in 
+          ''', re.VERBOSE)              # QUESTION are the optional arguments and return annotation ever used? -> yes in
 
 # TODO: check MRO's for all classes, attributes and methods!!!
 
@@ -99,7 +99,7 @@ class MatlabDocumenter(PyDocumenter):
 
         Returns True if successful, False if an error occurred.
         """
-        
+
         if self.env.config.matlab_relative_src_path:
             # Get relative path with respect to reporting source file
             basedir = os.path.split(self.directive._reporter.source)[0]
@@ -108,7 +108,7 @@ class MatlabDocumenter(PyDocumenter):
             basedir = self.env.config.matlab_src_dir
 
         if self.modname == "*":
-            # Direct search is enabled. Module is equal to src folder. 
+            # Direct search is enabled. Module is equal to src folder.
             (basedir, self.modname) = os.path.split(basedir)
 
         MatObject.basedir = basedir  # set MatObject base directory
@@ -157,7 +157,7 @@ class MatlabDocumenter(PyDocumenter):
             self.env.note_reread()
             return False
 
-    def add_content(self, more_content, no_docstring=False):
+    def add_content(self, more_content, get_doc=True):
         """Add content from docstrings, attribute documentation and user."""
         # set sourcename and add content from attribute documentation
         if self.analyzer:
@@ -172,23 +172,21 @@ class MatlabDocumenter(PyDocumenter):
             if self.objpath:
                 key = ('.'.join(self.objpath[:-1]), self.objpath[-1])
                 if key in attr_docs:
-                    no_docstring = True
-                    docstrings = [attr_docs[key]]
-                    for i, line in enumerate(self.process_doc(docstrings)):
-                        self.add_line(line, sourcename, i)
+                    get_doc = False
+                    docstrings = [sphinx.util.docstrings.prepare_docstring(attr_docs[key])]
         else:
             sourcename = 'docstring of %s' % self.fullname
 
         # add content from docstrings
-        if not no_docstring:
+        if get_doc:
             docstrings = self.get_doc()
+            # append at least a dummy docstring, so that the event autodoc-process-docstring 
+            # is fired and can add some content if desired
             if not docstrings:
-                # append at least a dummy docstring, so that the event
-                # autodoc-process-docstring is fired and can add some
-                # content if desired
                 docstrings = [[]]
+        
+        if docstrings and docstrings != [[]]:
             processed_doc = list(self.process_doc(docstrings))
-            
             for i, line in enumerate(self.alter_processed_doc(processed_doc)):
                 self.add_line(line, sourcename, i)
 
@@ -214,11 +212,12 @@ class MatlabDocumenter(PyDocumenter):
         """
         analyzed_member_names = set()
         if self.analyzer:
-            attr_docs = self.analyzer.find_attr_docs()
+            attr_docs = self.analyzer.find_attr_docs()  # TODO already called in generate()
             namespace = '.'.join(self.objpath)
             for item in attr_docs.items():
                 if item[0][0] == namespace:
                     analyzed_member_names.add(item[0][1])
+
         if not want_all:
             if not self.options.members:
                 return False, []
@@ -347,7 +346,7 @@ class MatlabDocumenter(PyDocumenter):
                     if has_access in friends:
                         return True
                 else:
-                     return False
+                    return False
             else:
                 return False
 
@@ -451,37 +450,43 @@ class MatlabDocumenter(PyDocumenter):
         if self.objpath:
             self.env.temp_data['autodoc:class'] = self.objpath[0]
 
-        want_all = all_members or self.options.inherited_members or \
-                   self.options.members is ALL
+        want_all = all_members or self.options.inherited_members or self.options.members is ALL
+
         # find out which members are documentable
         members_check_module, members = self.get_object_members(want_all)
 
         # remove members given by exclude-members
         if self.options.exclude_members:
-            members = [(membername, member) for (membername, member) in members
-                       if membername not in self.options.exclude_members]
+            members = [
+                (membername, member)
+                for (membername, member) in members if membername not in self.options.exclude_members
+            ]
 
         # document non-skipped members
         memberdocumenters = []
+        matdocumenters = [cls for (name, cls) in self.documenters.items() if name.startswith('mat:')]
+
         for (mname, member, isattr) in self.filter_members(members, want_all):
-            classes = []
-            for name, cls in self.documenters.items():
-                if name.startswith('mat:'):
-                    if cls.can_document_member(member, mname, isattr, self):
-                        classes.append(cls)
-            if not classes:
-                # don't know how to document this member
+
+            # TODO This should just be a one to one mapping
+
+            classes = [cls for cls in matdocumenters if cls.can_document_member(member, mname, isattr, self)]
+
+            if not classes: # don't know how to document this member
                 continue
+
             # prefer the documenter with the highest priority
             classes.sort(key=lambda cls: cls.priority)
             # give explicitly separated module name, so that members
             # of inner classes can be documented
-            full_mname = self.modname + '::' + \
-                              '.'.join(self.objpath + [mname])
+            full_mname = self.modname + '::' + '.'.join(self.objpath + [mname])
             documenter = classes[-1](self.directive, full_mname, self.indent)
             memberdocumenters.append((documenter, isattr))
-        member_order = self.options.member_order or \
-                       self.env.config.autodoc_member_order
+
+        #################################################################################
+        # Sort members
+
+        member_order = self.options.member_order or self.env.config.autodoc_member_order
         if member_order == 'groupwise':
             # sort by group; relies on stable sort to keep items in the
             # same group sorted alphabetically
@@ -489,15 +494,17 @@ class MatlabDocumenter(PyDocumenter):
         elif member_order == 'bysource' and self.analyzer:
             # sort by source order, by virtue of the module analyzer
             tagorder = self.analyzer.tagorder
+
             def keyfunc(entry):
                 fullname = entry[0].name.split('::')[1]
                 return tagorder.get(fullname, len(tagorder))
+
             memberdocumenters.sort(key=keyfunc)
 
         for documenter, isattr in memberdocumenters:
             documenter.generate(
-                all_members=True, real_modname=self.real_modname,
-                check_module=members_check_module and not isattr)
+                all_members=True, real_modname=self.real_modname, check_module=members_check_module and not isattr
+            )
 
         # reset current objects
         self.env.temp_data['autodoc:module'] = None
@@ -579,14 +586,14 @@ class MatlabDocumenter(PyDocumenter):
 class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):
 
     def parse_name(self):
-        ret = MatlabDocumenter.parse_name(self)
+        ret = super().parse_name()
         if self.args or self.retann:
             logger.warn('signature arguments or return annotation '
                                 'given for automodule %s' % self.fullname)
         return ret
 
     def add_directive_header(self, sig):
-        MatlabDocumenter.add_directive_header(self, sig)
+        super().add_directive_header(sig)
 
         # add some module-specific options
         if self.options.synopsis:
@@ -712,7 +719,7 @@ class MatDocstringSignatureMixin(object):
         setattr(self, '__new_doclines', doclines[i:])
         return args, retann
 
-    def get_doc(self, encoding=None):
+    def get_doc(self):
         lines = getattr(self, '__new_doclines', None)
         if lines is not None:
             return [lines]
@@ -727,31 +734,6 @@ class MatDocstringSignatureMixin(object):
                 self.args, self.retann = result
         return MatlabDocumenter.format_signature(self)
 
-
-class MatFunctionDocumenter(MatDocstringSignatureMixin,
-                            MatModuleLevelDocumenter):
-    """
-    Specialized Documenter subclass for functions.
-    """
-    objtype = 'function'
-    member_order = 30
-    option_spec = {
-        'invert-conf-argument-docstring': bool_option
-    }
-
-    @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
-        return isinstance(member, MatFunction)
-
-    def format_args(self):
-        if self.object.args:
-            return '('+ ', '.join(self.object.args) + ')'
-        else:
-            return None
-
-    def document_members(self, all_members=False):
-        pass
-
     def alter_processed_doc(self, doc: list):
 
         use_args = self.env.config.matlab_argument_docstrings
@@ -762,7 +744,7 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
 
         # Tokenize parsed RST document
         tks = RstLexer().get_tokens('\n'.join(doc)) if doc else None
-        newDoc, line = [], ''        
+        newDoc, line = [], ''
 
         # Add lines until first field is encountered
         token = next(tks, None)
@@ -780,7 +762,7 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
         if self.object.args_va:
             if newDoc and newDoc[-1] != '':
                 newDoc.append('')
-            
+
             for iArg, (argName, args) in enumerate(self.object.args_va.items()):
 
                 fields_to_skip.append(f':param {argName}:')
@@ -790,7 +772,7 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
                     line = '          * ' if iArg else ':parameters: * '
                     line += f'{argName} (``struct``)'
                     newDoc.append(line)
-                    
+
                 for arg in args:
 
                     if len(args) == 1:
@@ -811,7 +793,7 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
                         if arg.default:
                             codeblock.append('optional')
                         if repeating:
-                             codeblock.append('repeating')
+                            codeblock.append('repeating')
                         line += f" (``{', '.join(codeblock)}``)"
 
                     # Add docstring
@@ -844,10 +826,10 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
 
                 newDoc.append(line)
             newDoc.append('')
-            fields_to_skip.append(':returns:')
+            fields_to_skip += [':returns:', ':rtype:']
 
         # Add back remaining tokens
-        skip_to_next_field = False
+        skip_to_next_field, line = False, ''
         while token:
             # Skip argument and return fields if added in argument blocks
             if token[0] is Token.Name.Class:
@@ -855,8 +837,8 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
             if skip_to_next_field:
                 token = next(tks, None)
                 continue
-                
-            if token == (Token.Text.Whitespace, '\n'):
+
+            if token[1] == '\n':
                 newDoc.append(line)
                 line = ''
             else:
@@ -864,6 +846,28 @@ class MatFunctionDocumenter(MatDocstringSignatureMixin,
             token = next(tks, None)
 
         return newDoc
+
+
+class MatFunctionDocumenter(MatDocstringSignatureMixin, MatModuleLevelDocumenter):
+    """
+    Specialized Documenter subclass for functions.
+    """
+    objtype = 'function'
+    member_order = 30
+    option_spec = {'invert-conf-argument-docstring': bool_option}
+
+    @classmethod
+    def can_document_member(cls, member, *args, **kwargs):
+        return type(member) is MatFunction
+
+    def format_args(self):
+        if self.object.args:
+            return '(' + ', '.join(self.object.args) + ')'
+        else:
+            return None
+
+    def document_members(self, *args, **kwargs):
+        pass
 
 
 def make_baseclass_links(obj):
@@ -901,11 +905,11 @@ class MatClassDocumenter(MatModuleLevelDocumenter):
     }
 
     @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
+    def can_document_member(cls, member, *args, **kwargs):
         return isinstance(member, MatClass)
 
     def import_object(self):
-        ret = MatModuleLevelDocumenter.import_object(self)
+        ret = super().import_object()
         # if the class is documented under another name, document it
         # as data/attribute
         if ret:
@@ -946,12 +950,12 @@ class MatClassDocumenter(MatModuleLevelDocumenter):
                 # use args only for Class signature
                 return '(%s)' % result[0]
 
-        return MatModuleLevelDocumenter.format_signature(self)
+        return super().format_signature()
 
     def add_directive_header(self, sig):
         if self.doc_as_attr:
             self.directivetype = 'attribute'
-        MatlabDocumenter.add_directive_header(self, sig)
+        super(MatlabDocumenter, self).add_directive_header(sig)
 
         # add inheritance info, if wanted
         if not self.doc_as_attr and self.options.show_inheritance:
@@ -998,34 +1002,33 @@ class MatClassDocumenter(MatModuleLevelDocumenter):
             doc.append(sphinx.util.docstrings.prepare_docstring(docstring))
         return doc
 
-    def add_content(self, more_content, no_docstring=False):
+    def add_content(self, more_content, **kwargs):
         if self.doc_as_attr:
             classname = sphinx.util.inspect.safe_getattr(self.object, '__name__', None)
             if classname:
                 content = ViewList(
                     [_('alias of :class:`%s`') % classname], source='')
-                MatModuleLevelDocumenter.add_content(self, content,
-                                                  no_docstring=True)
+                super().add_content(content, get_doc=False)
         else:
-            MatModuleLevelDocumenter.add_content(self, more_content)
+            super().add_content(more_content)
 
-    def document_members(self, all_members=False):
+    def document_members(self, *args, **kwargs):
         if self.doc_as_attr:
             return
-        MatModuleLevelDocumenter.document_members(self, all_members)
+        super().document_members(*args, **kwargs)
 
 
 class MatExceptionDocumenter(MatlabDocumenter, PyExceptionDocumenter):
 
     @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
+    def can_document_member(cls, member, *args, **kwargs):
         return isinstance(member, MatException)
 
 
 class MatDataDocumenter(MatModuleLevelDocumenter, PyDataDocumenter):
 
     @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
+    def can_document_member(cls, member, *args, **kwargs):
         return isinstance(member, MatScript)
 
 
@@ -1038,11 +1041,11 @@ class MatMethodDocumenter(MatDocstringSignatureMixin, MatClassLevelDocumenter):
     priority = 1  # must be more than FunctionDocumenter
 
     @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
-        return isinstance(member, MatMethod)
+    def can_document_member(cls, member, *args, **kwargs):
+        return type(member) is MatMethod
 
     def import_object(self):
-        ret = MatClassLevelDocumenter.import_object(self)
+        ret = super().import_object()
         if self.object.attrs.get('Static'):
             self.directivetype = 'staticmethod'
             # document class and static members before ordinary ones
@@ -1058,7 +1061,7 @@ class MatMethodDocumenter(MatDocstringSignatureMixin, MatClassLevelDocumenter):
             else:
                 return '('+ ', '.join(self.object.args) + ')'
 
-    def document_members(self, all_members=False):
+    def document_members(self, *args, **kwargs):
         pass
 
 
@@ -1076,14 +1079,14 @@ class MatAttributeDocumenter(MatClassLevelDocumenter):
     priority = 10
 
     @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
-        return isinstance(member, MatProperty) and member.attrs.get('Constant')
+    def can_document_member(cls, member, *args, **kwargs):
+        return type(member) is MatProperty
 
-    def document_members(self, all_members=False):
+    def document_members(self, *args, **kwargs):
         pass
 
     def import_object(self):
-        ret = MatClassLevelDocumenter.import_object(self)
+        ret = super().import_object()
         # getset = self.object.name.split('_')
 
         if isinstance(self.object, MatMethod):
@@ -1098,7 +1101,7 @@ class MatAttributeDocumenter(MatClassLevelDocumenter):
                or self.modname
 
     def add_directive_header(self, sig):
-        MatClassLevelDocumenter.add_directive_header(self, sig)
+        super().add_directive_header(sig)
         if not self.options.annotation:
             if not self._datadescriptor:
                 try:
@@ -1106,57 +1109,15 @@ class MatAttributeDocumenter(MatClassLevelDocumenter):
                 except ValueError:
                     pass
                 else:
-                    self.add_line('   :annotation: = ' + objrepr, '<autodoc>')
+                    line = '   :annotation: = ' + objrepr
+                    if self.object.attrs.get('Constant', False):
+                        line += ', constant'
+                    self.add_line(line, '<autodoc>')
         elif self.options.annotation is SUPPRESS:
             pass
         else:
             self.add_line('   :annotation: %s' % self.options.annotation,
                           '<autodoc>')
-
-    def add_content(self, more_content, no_docstring=False):
-        # if not self._datadescriptor:
-        #     # if it's not a data descriptor, its docstring is very probably the
-        #     # wrong thing to display
-        #     no_docstring = True
-        MatClassLevelDocumenter.add_content(self, more_content, no_docstring)
-
-
-class MatInstanceAttributeDocumenter(MatAttributeDocumenter):
-    """
-    Specialized Documenter subclass for attributes that cannot be imported
-    because they are instance attributes (e.g. assigned in __init__).
-    """
-    objtype = 'instanceattribute'
-    directivetype = 'attribute'
-    member_order = 60
-
-    # must be higher than AttributeDocumenter
-    priority = 11
-
-    # @classmethod
-    # def can_document_member(cls, member, membername, isattr, parent):
-    #     """This documents only INSTANCEATTR members."""
-    #     return isattr and (member is INSTANCEATTR)
-
-    @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
-        is_instance_attr = (isinstance(member, MatProperty) and
-                            not member.attrs.get('Constant'))
-        return is_instance_attr
-
-    # def import_object(self):
-    #     """Never import anything."""
-    #     # disguise as an attribute
-    #     self.objtype = 'attribute'
-    #     self._datadescriptor = False
-    #     return True
-
-    def add_content(self, more_content, no_docstring=False):
-        """Never try to get a docstring from the object."""
-        # MatAttributeDocumenter.add_content(self, more_content,
-        #                                    no_docstring=True)
-        MatAttributeDocumenter.add_content(self, more_content, no_docstring)
-
 
 class MatScriptDocumenter(MatModuleLevelDocumenter):
     """
@@ -1165,10 +1126,10 @@ class MatScriptDocumenter(MatModuleLevelDocumenter):
     objtype = 'script'
 
     @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
+    def can_document_member(cls, member, *args, **kwargs):
         return isinstance(member, MatScript)
 
-    def document_members(self, all_members=False):
+    def document_members(self, *args, **kwargs):
         pass
 
 class MatApplicationDocumenter(MatModuleLevelDocumenter):
@@ -1178,9 +1139,8 @@ class MatApplicationDocumenter(MatModuleLevelDocumenter):
     objtype = 'application'
 
     @classmethod
-    def can_document_member(cls, member, membername, isattr, parent):
+    def can_document_member(cls, member, *args, **kwargs):
         return isinstance(member, MatApplication)
 
-    def document_members(self, all_members=False):
+    def document_members(self, *args, **kwargs):
         pass
-

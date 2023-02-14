@@ -829,10 +829,10 @@ def setup(app):
                                 'autodata',
                                 mat_directives.MatlabAutodocDirective)
 
-    app.registry.add_documenter('mat:instanceattribute', doc.MatInstanceAttributeDocumenter)
-    app.add_directive_to_domain('mat',
-                                'autoinstanceattribute',
-                                mat_directives.MatlabAutodocDirective)
+    # app.registry.add_documenter('mat:instanceattribute', doc.MatInstanceAttributeDocumenter)
+    # app.add_directive_to_domain('mat',
+    #                             'autoinstanceattribute',
+    #                             mat_directives.MatlabAutodocDirective)
 
     app.registry.add_documenter('mat:application', doc.MatApplicationDocumenter)
     app.add_directive_to_domain('mat',

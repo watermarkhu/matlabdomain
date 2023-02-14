@@ -15,6 +15,6 @@ Sketches
 DEV
 ===
 
-.. autofunction:: lev_doc_example_function
-   :invert-conf-argument-docstring:
+.. autoclass:: lev_doc_example_class
 
+.. autofunction:: lev_doc_example_function
