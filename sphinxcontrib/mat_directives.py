@@ -1,8 +1,11 @@
+import sphinx.util
 from sphinx.ext.autodoc.directive import AutodocDirective, DummyOptionSpec, DocumenterBridge
 from sphinx.ext.autodoc.directive import process_documenter_options, parse_generated_content
-import sphinx.util
 
+
+MAT_DOM = 'sphinxcontrib-matlabdomain'
 logger = sphinx.util.logging.getLogger('matlab-domain')
+
 
 class MatlabAutodocDirective(AutodocDirective):
     """A directive class for all MATLAB autodoc directives.
@@ -26,7 +29,7 @@ class MatlabAutodocDirective(AutodocDirective):
             source, lineno = reporter.get_source_and_line(self.lineno)  # type: ignore
         except AttributeError:
             source, lineno = (None, None)
-        logger.debug('[sphinxcontrib-matlabdomain] %s:%s: input:\n%s', source, lineno, self.block_text)
+        logger.debug('[%s] %s:%s: input:\n%s', MAT_DOM, source, lineno, self.block_text)
 
         # look up target Documenter
         objtype = self.name.replace('auto', '')  # Removes auto
@@ -42,18 +45,18 @@ class MatlabAutodocDirective(AutodocDirective):
             return []
 
         # generate the output
-        params = DocumenterBridge(self.env, reporter, documenter_options, lineno, self.state)
-        documenter = doccls(params, self.arguments[0])
+        directive = DocumenterBridge(self.env, reporter, documenter_options, lineno, self.state)
+        documenter = doccls(directive, self.arguments[0])
         documenter.generate(more_content=self.content)
-        if not params.result:
+        if not directive.result:
             return []
 
-        logger.debug('[sphinxcontrib-matlabdomain] output:\n%s', '\n'.join(params.result))
+        logger.debug('[%s] output:\n%s', MAT_DOM, '\n'.join(directive.result))
 
         # record all filenames as dependencies -- this will at least
         # partially make automatic invalidation possible
-        for fn in params.record_dependencies:
+        for fn in directive.record_dependencies:
             self.state.document.settings.record_dependencies.add(fn)
 
-        result = parse_generated_content(self.state, params.result, documenter)
+        result = parse_generated_content(self.state, directive.result, documenter)
         return result

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
     sphinxcontrib.mat_documenters
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -9,8 +8,8 @@
     :license: BSD, see LICENSE for details.
 """
 from .mat_types import (
-    MatModule, MatFunction, MatClass, MatProperty, MatMethod, MatScript, MatApplication, 
-    modules, import_matlab_type
+    MatModule, MatFunction, MatClass, MatProperty, MatMethod, MatScript, MatApplication, modules,
+    import_matlab_type
 )
 
 import os
@@ -18,25 +17,31 @@ import re
 import traceback
 import inspect
 
-from docutils.statemachine import ViewList
+from typing import (
+    TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Type,
+    TypeVar, Union
+)
 
+from docutils.statemachine import ViewList, StringList
 import sphinx.util
-from sphinx.locale import _
+from sphinx.locale import _, __
 from sphinx.pycode import PycodeError
-from sphinx.ext.autodoc import py_ext_sig_re as mat_ext_sig_re, \
-    identity, Options, ALL, INSTANCEATTR, members_option, \
-    SUPPRESS, annotation_option, bool_option, \
-    Documenter as PyDocumenter, \
-    ModuleDocumenter as PyModuleDocumenter, \
-    FunctionDocumenter as PyFunctionDocumenter, \
-    ClassDocumenter as PyClassDocumenter, \
-    ExceptionDocumenter as PyExceptionDocumenter, \
-    DataDocumenter as PyDataDocumenter, \
+from sphinx.ext.autodoc import (
+    identity, Options, ALL, INSTANCEATTR, members_option, SUPPRESS, annotation_option, bool_option,
+    Documenter as PyDocumenter,
+    ModuleDocumenter as PyModuleDocumenter,
+    FunctionDocumenter as PyFunctionDocumenter,
+    ClassDocumenter as PyClassDocumenter,
+    ExceptionDocumenter as PyExceptionDocumenter,
+    DataDocumenter as PyDataDocumenter,
     MethodDocumenter as PyMethodDocumenter
+)
 from pygments.lexers.markup import RstLexer
 from pygments.token import Token
 
 
+MAT_DOM = 'sphinxcontrib-matlabdomain'
+logger = sphinx.util.logging.getLogger('matlab-domain')
 mat_ext_sig_re = re.compile(            # QUESTION why is it required to have the explicit module name
     r'''^ ([+@]?[+@\w.]+::)?            # explicit module name 
           ([+@]?[+@\w.]+\.)?            # module and/or class name(s)
@@ -47,9 +52,6 @@ mat_ext_sig_re = re.compile(            # QUESTION why is it required to have th
           ''', re.VERBOSE)              # QUESTION are the optional arguments and return annotation ever used? -> yes in
 
 # TODO: check MRO's for all classes, attributes and methods!!!
-
-
-logger = sphinx.util.logging.getLogger('matlab-domain')
 
 
 class MatcodeError(Exception):
@@ -90,7 +92,7 @@ class MatModuleAnalyzer(object):
         return obj
 
     def __init__(self, source, modname, srcname):
-        
+
         self.modname = modname      # name of the module
         self.srcname = srcname      # name of the source file
         self.source = source        # file-like object yielding source lines
@@ -129,6 +131,84 @@ class MatlabDocumenter(PyDocumenter):
     Base class for documenters of MATLAB objects.
     """
     domain = 'mat'
+
+    def generate(
+        self,
+        more_content: Optional[StringList] = None,
+        real_modname: str = None,
+        check_module: bool = False,
+        all_members: bool = False
+    ) -> None:
+        """Generate reST for the object given by *self.name*, and possibly for
+        its members.
+
+        If *more_content* is given, include that content. If *real_modname* is
+        given, use that module name to find attribute docs. If *check_module* is
+        True, only generate if the object is defined in the module name it is
+        imported from. If *all_members* is True, document all members.
+        """
+        if not self.parse_name():
+            # need a module to import
+            logger.warn(
+                'don\'t know which module to import for autodocumenting '
+                '%r (try placing a "module" or "currentmodule" directive '
+                'in the document, or giving an explicit module name)' % self.name
+            )
+            return
+
+        # now, import the module and get object to document
+        if not self.import_object():
+            return
+
+        # If there is no real module defined, figure out which to use.
+        # The real module is used in the module analyzer to look up the module
+        # where the attribute documentation would actually be found in.
+        # This is used for situations where you have a module that collects the
+        # functions and classes of internal submodules.
+        self.real_modname = real_modname or self.get_real_modname()
+
+        # try to also get a source code analyzer for attribute docs
+        try:
+            self.analyzer = MatModuleAnalyzer.for_module(self.real_modname)
+            # parse right now, to get PycodeErrors on parsing (results will
+            # be cached anyway)
+            self.analyzer.find_attr_docs()
+        except PycodeError as err:
+            self.env.app.debug('[sphinxcontrib-matlabdomain] module analyzer failed: %s', err)
+            # no source file -- e.g. for builtin and C modules
+            self.analyzer = None
+            # at least add the module.__file__ as a dependency
+            if hasattr(self.module, '__file__') and self.module.__file__:
+                self.directive.record_dependencies.add(self.module.__file__)
+        else:
+            self.directive.record_dependencies.add(self.analyzer.srcname)
+
+        # check __module__ of object (for members not given explicitly)
+        if check_module:
+            if not self.check_module():
+                return
+
+        # make sure that the result starts with an empty line.  This is
+        # necessary for some situations where another directive preprocesses
+        # reST and no starting newline is present
+        self.add_line('', '<autodoc>')
+
+        # format the object's signature, if any
+        sig = self.format_signature()
+
+        # generate the directive header and options, if applicable
+        self.add_directive_header(sig)
+        self.add_line('', '<autodoc>')
+
+        # e.g. the module directive doesn't have content
+        self.indent += self.content_indent
+
+        # add all content (from docstrings, attribute docs etc.)
+        self.add_content(more_content)
+
+        # document members, if possible
+        self.document_members(all_members)
+
 
     def parse_name(self):
         """Determine what module to import and what attribute to document.
@@ -546,7 +626,7 @@ class MatlabDocumenter(PyDocumenter):
             classes.sort(key=lambda cls: cls.priority)
             # give explicitly separated module name, so that members
             # of inner classes can be documented
-            full_mname = self.modname + '::' + '.'.join(self.objpath + [mname])
+            full_mname = '.'.join(self.objpath + [mname])
             documenter = classes[-1](self.directive, full_mname, self.indent)
             memberdocumenters.append((documenter, isattr))
 
@@ -563,7 +643,7 @@ class MatlabDocumenter(PyDocumenter):
             tagorder = self.analyzer.tagorder
 
             def keyfunc(entry):
-                fullname = entry[0].name.split('::')[1]
+                fullname = entry[0].name
                 return tagorder.get(fullname, len(tagorder))
 
             memberdocumenters.sort(key=keyfunc)
@@ -576,78 +656,6 @@ class MatlabDocumenter(PyDocumenter):
         # reset current objects
         self.env.temp_data['autodoc:module'] = None
         self.env.temp_data['autodoc:class'] = None
-
-    def generate(self, more_content=None, real_modname=None,
-                 check_module=False, all_members=False):
-        """Generate reST for the object given by *self.name*, and possibly for
-        its members.
-
-        If *more_content* is given, include that content. If *real_modname* is
-        given, use that module name to find attribute docs. If *check_module* is
-        True, only generate if the object is defined in the module name it is
-        imported from. If *all_members* is True, document all members.
-        """
-        if not self.parse_name():
-            # need a module to import
-            logger.warn(
-                'don\'t know which module to import for autodocumenting '
-                '%r (try placing a "module" or "currentmodule" directive '
-                'in the document, or giving an explicit module name)'
-                % self.name)
-            return
-
-        # now, import the module and get object to document
-        if not self.import_object():
-            return
-
-        # If there is no real module defined, figure out which to use.
-        # The real module is used in the module analyzer to look up the module
-        # where the attribute documentation would actually be found in.
-        # This is used for situations where you have a module that collects the
-        # functions and classes of internal submodules.
-        self.real_modname = real_modname or self.get_real_modname()
-
-        # try to also get a source code analyzer for attribute docs
-        try:
-            self.analyzer = MatModuleAnalyzer.for_module(self.real_modname)
-            # parse right now, to get PycodeErrors on parsing (results will
-            # be cached anyway)
-            self.analyzer.find_attr_docs()
-        except PycodeError as err:
-            self.env.app.debug('[sphinxcontrib-matlabdomain] module analyzer failed: %s', err)
-            # no source file -- e.g. for builtin and C modules
-            self.analyzer = None
-            # at least add the module.__file__ as a dependency
-            if hasattr(self.module, '__file__') and self.module.__file__:
-                self.directive.record_dependencies.add(self.module.__file__)
-        else:
-            self.directive.record_dependencies.add(self.analyzer.srcname)
-
-        # check __module__ of object (for members not given explicitly)
-        if check_module:
-            if not self.check_module():
-                return
-
-        # make sure that the result starts with an empty line.  This is
-        # necessary for some situations where another directive preprocesses
-        # reST and no starting newline is present
-        self.add_line('', '<autodoc>')
-
-        # format the object's signature, if any
-        sig = self.format_signature()
-
-        # generate the directive header and options, if applicable
-        self.add_directive_header(sig)
-        self.add_line('', '<autodoc>')
-
-        # e.g. the module directive doesn't have content
-        self.indent += self.content_indent
-
-        # add all content (from docstrings, attribute docs etc.)
-        self.add_content(more_content)
-
-        # document members, if possible
-        self.document_members(all_members)
 
 
 class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):

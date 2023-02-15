@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
+"""optional
     sphinxcontrib.mat_types
     ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -9,30 +8,30 @@
     :license: BSD, see LICENSE for details.
 """
 import os
+import re
 import sphinx.util
 import charset_normalizer
-from copy import copy
-from zipfile import ZipFile
-from pygments.token import Token
-from pygments.lexers.matlab import MatlabLexer as MatlabLexer
-from .regex import code_preprocess
 import xml.etree.ElementTree as ET
-from abc import ABC, abstractmethod
-from typing import List, Tuple, Generator
+from copy import copy
+from abc import ABC
+from zipfile import ZipFile
 from collections import defaultdict
+from typing import Tuple, Generator, Optional, List
+from pygments.token import Token, _TokenType
+from pygments.lexers.matlab import MatlabLexer as MatlabLexer
 
 MAT_DOM = 'sphinxcontrib-matlabdomain'
 logger = sphinx.util.logging.getLogger('matlab-domain')
 modules = {}
-packages = {}
+TokenType = Tuple[_TokenType, str]
+TksType = Generator[TokenType, None, None]
 
 # create some MATLAB objects
 # TODO: +packages & @class folders
 # TODO: subfunctions (not nested) and private folders/functions/classes
-# TODO: script files
 
 
-def import_matlab_type(objname, basedir):
+def import_matlab_type(objname: str, basedir: str) -> Optional['MatObject']:
     """
     Makes a MatObject.
 
@@ -81,7 +80,9 @@ def import_matlab_type(objname, basedir):
         modname = path.replace(os.sep, '.')  # module name
 
         # Preprocessing the codestring
-        code = code_preprocess(full_code)
+        code = code_fix_function_signatures(
+            code_remove_line_continuations(code_remove_comment_header(full_code))
+        )
         tks = MatlabLexer().get_tokens(code)
         token = next(tks)
 
@@ -135,12 +136,103 @@ def import_matlab_type(objname, basedir):
         return None
 
 
+######################################################################################
+#                               .m file pre-processing
+######################################################################################
+
+
+def code_remove_comment_header(code: str) -> str:
+    """
+    Removes the comment header (if there is one) and empty lines from the
+    top of the current read code.
+    :param code: Current code string.
+    :type code: str
+    :returns: Code string without comments above a function, class or
+                procedure/script.
+    """
+    # get the line number when the comment header ends (incl. empty lines)
+    ln_pos = 0
+    for line in code.splitlines(True):
+        if re.match(r"[ \t]*(%|\n)", line):
+            ln_pos += 1
+        else:
+            break
+
+    if ln_pos > 0:
+        # remove the header block and empty lines from the top of the code
+        try:
+            code = code.split('\n', ln_pos)[ln_pos:][0]
+        except IndexError:
+            # only header and empty lines.
+            code = ''
+
+    return code
+
+
+def code_remove_line_continuations(code: str) -> str:
+    """
+    Removes line continuations (...) from code as functions must be on a
+    single line
+    :param code:
+    :type code: str
+    :return:
+    """
+    pat = r"('.*)(\.\.\.)(.*')"
+    code = re.sub(pat, r'\g<1>\g<3>', code, flags=re.MULTILINE)
+
+    pat = r"^([^%'\"\n]*)(\.\.\..*\n)"
+    code = re.sub(pat, r'\g<1>', code, flags=re.MULTILINE)
+    return code
+
+
+re_function_signatures = re.compile(
+    r"""^
+    [ \t]*function[ \t.\n]*         # keyword (function)
+    (\[?[\w, \t.\n]*\]?)[ \t.\n]*   # outputs: group(1)
+    =[ \t.\n]*                      # punctuation (eq)
+    (\w+)[ \t.\n]*                  # name: group(2)
+    \(?([\w, \t.\n]*)\)?            # args: group(3)
+    """,
+    re.VERBOSE | re.MULTILINE  # search start of every line
+)
+
+
+def code_fix_function_signatures(code: str) -> str:
+    """
+    Transforms function signatures with line continuations to a function
+    on a single line with () appended. Required because pygments cannot
+    handle this situation correctly.
+
+    :param code:
+    :type code: str
+    :return: Code string with functions on single line
+    """
+
+    # replacement function
+    def repl(m):
+        retv = m.group(0)
+        # if no args and doesn't end with parentheses, append "()"
+        if not (m.group(3) or m.group(0).endswith('()')):
+            retv = retv.replace(m.group(2), m.group(2) + "()")
+        return retv
+
+    code = re_function_signatures.sub(repl, code)  # search for functions and apply replacement
+    msg = '[%s] replaced ellipsis & appended parentheses in function signatures'
+    logger.debug(msg, MAT_DOM)
+    return code
+
+
+######################################################################################
+#                               Shared token parsers
+######################################################################################
+
+
 def tks_next(
-    tks: Generator,
+    tks: TksType,
     skip_newline: bool = False,
     skip_semicolon: bool = True,
     skip_comment: bool = True
-):
+) -> TokenType:
     """Iterator for the next token. Returns None if the iterator is empty."""
     token = next(tks, None)
     while token:
@@ -157,7 +249,7 @@ def tks_next(
     return token
 
 
-def tks_code_literal(tks: Generator, token: tuple = None):
+def tks_code_literal(tks: Generator, token: Optional[TokenType] = None) -> Tuple[str, TokenType]:
     """ 
     Returns a literal codestring until 
     1) the literal ends with ','
@@ -200,7 +292,7 @@ def tks_code_literal(tks: Generator, token: tuple = None):
     return literal, token
 
 
-def tks_docstring(tks: Generator, token: tuple, header: str = ''):
+def tks_docstring(tks: TksType, token: TokenType, header: str = '') -> Tuple[str, TokenType]:
     """
     The token parser for docstrings.
 
@@ -240,8 +332,9 @@ def tks_docstring(tks: Generator, token: tuple, header: str = ''):
 
 
 ######################################################################################
-#                                       Common
+#                             Common Matlab objects
 ######################################################################################
+
 
 class MatObject(object):
     """
@@ -292,6 +385,7 @@ class MatObject(object):
         else:
             return defargs
 
+
 class MatProperty(MatObject):
     """
     The token parser for properties.
@@ -304,7 +398,7 @@ class MatProperty(MatObject):
         self.name = name
         self.attrs = attrs
 
-    def parse_tokens(self, tks: Generator, token: tuple):
+    def parse_tokens(self, tks: TksType, token: TokenType):
         """
         Parses a list of tokens starting from after the property name. 
         """
@@ -372,7 +466,7 @@ class MatProperty(MatObject):
 
 
 class MatArgument(MatProperty):
-    def parse_tokens(self, tks: Generator, token: tuple):
+    def parse_tokens(self, tks: TksType, token: TokenType):
         if token == (Token.Punctuation, '.'):
             self.field = next(tks)[1]
             token = tks_next(tks, skip_comment=False)
@@ -397,7 +491,7 @@ class AttributeBlock(ABC):
     '''
     attr_types = {}
 
-    def __init__(self, tks: Generator):
+    def __init__(self, tks: TksType):
 
         self.attrs = {}
 
@@ -426,7 +520,7 @@ class AttributeBlock(ABC):
                 if text_attribute:
                     token = self.parse_attribute(text_attribute, tks)
 
-    def parse_attribute(self, attribute, tks):
+    def parse_attribute(self, attribute: str, tks: TksType) -> TokenType:
         '''
         Parses a single attribute.
 
@@ -473,7 +567,7 @@ class ArgumentsBlock(AttributeBlock):
     '''
     attr_types = {"Input": bool, "Output": bool, "Repeating": bool}
 
-    def __init__(self, tks: Generator, args: list, retv: list):
+    def __init__(self, tks: TksType, args: list, retv: list):
         super().__init__(tks)
         if self.attrs.get('Input', False) or not self.attrs.get('Output', False):
             self.arg_list, self.type = args, 'Input'
@@ -536,7 +630,7 @@ class MatModule(MatObject):
         # add module to system dictionary
         modules[package] = self
 
-    def safe_getmembers(self):
+    def safe_getmembers(self) -> List[tuple]:
         results = []
         for key in os.listdir(self.path):
             # make full path
@@ -644,7 +738,7 @@ class MatFunction(MatObject):
     # MATLAB keywords that increment keyword-end pair count
     matlab_end_keywords = {'for', 'if', 'switch', 'try', 'while', 'parfor'}
 
-    def __init__(self, name: str, modname: str, tks: Generator):
+    def __init__(self, name: str, modname: str, tks: TksType):
         super().__init__(name)
 
         self.module = modname  #: Path of folder containing :class:`MatObject`.
@@ -808,7 +902,7 @@ class PropertiesBlock(AttributeBlock):
         'TestParameter': bool
     }
 
-    def __init__(self, tks: Generator):
+    def __init__(self, tks: TksType):
         super().__init__(tks)
         self.properties = {}
 
@@ -846,7 +940,7 @@ class MethodsBlock(AttributeBlock):
         'ParameterCombination': bool
     }
 
-    def __init__(self, tks: Generator, cls: 'MatClass'):
+    def __init__(self, tks: TksType, cls: 'MatClass'):
         super().__init__(tks)
         self.methods = {}
 
@@ -872,7 +966,7 @@ class MatMethod(MatFunction):
     '''
     A MATLAB method
     '''
-    def __init__(self, cls: 'MatClass', attrs: dict, tks: Generator):
+    def __init__(self, cls: 'MatClass', attrs: dict, tks: TksType):
         super().__init__(name=None, modname=cls.module, tks=tks)
         self.cls = cls
         self.attrs = attrs
@@ -890,7 +984,7 @@ class MatClass(AttributeBlock, MatObject):
         'Sealed': bool
     }
 
-    def __init__(self, name: str, modname: str, tks: Generator, basedir: str):
+    def __init__(self, name: str, modname: str, tks: TksType, basedir: str):
 
         super().__init__(tks)
         super(AttributeBlock, self).__init__(name)
@@ -1022,7 +1116,7 @@ class MatClass(AttributeBlock, MatObject):
 
 
 class MatScript(MatObject):
-    def __init__(self, name: str, modname: str, tks: Generator, token: Tuple):
+    def __init__(self, name: str, modname: str, tks: TksType, token: TokenType):
         super().__init__(name)
         self.module = modname
         self.docstring, token = tks_docstring(tks, token)

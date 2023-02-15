@@ -1,3 +1,5 @@
+:ref:`genindex`
+
 todos
 =====
 
@@ -8,7 +10,7 @@ Sketches
 ========
 
 .. toctree::
-
+ 
     sketches/classes.md
     sketches/flow.md
 

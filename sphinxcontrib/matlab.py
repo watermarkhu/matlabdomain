@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
     sphinxcontrib.matlab
     ~~~~~~~~~~~~~~~~~~~~
@@ -25,6 +24,8 @@ from sphinx.util.nodes import make_refnode
 from sphinx.util.docfields import Field, GroupedField, TypedField
 import sphinx.util
 
+
+MAT_DOM = 'sphinxcontrib-matlabdomain'
 logger = sphinx.util.logging.getLogger('matlab-domain')
 
 
@@ -734,8 +735,8 @@ class MATLABDomain(Domain):
         if not matches:
             return None
         elif len(matches) > 1:
-            logger.warning('[sphinxcontrib-matlabdomain] more than one target found for cross-reference %r: %s',
-                           target, ', '.join(match[0] for match in matches), type='ref', subtype='python', location=node)
+            logger.warning('[%s] more than one target found for cross-reference %r: %s',
+                           MAT_DOM, target, ', '.join(match[0] for match in matches), type='ref', subtype='python', location=node)
 
         name, obj = matches[0]
 
