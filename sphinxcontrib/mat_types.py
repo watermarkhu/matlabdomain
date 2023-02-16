@@ -30,6 +30,78 @@ TksType = Generator[TokenType, None, None]
 # TODO: +packages & @class folders
 # TODO: subfunctions (not nested) and private folders/functions/classes
 
+class MatcodeError(Exception):
+    def __str__(self):
+        res = self.args[0]
+        if len(self.args) > 1:
+            res += ' (exception was: %r)' % self.args[1]
+        return res
+
+
+class MatModuleAnalyzer(object):
+    # cache for analyzer objects -- caches both by module and file name
+    cache = {}
+
+    @classmethod
+    def for_folder(cls, dirname, modname):
+        if ('folder', dirname) in cls.cache:
+            return cls.cache['folder', dirname]
+        obj = cls(None, modname, dirname)
+        cls.cache['folder', dirname] = obj
+        return obj
+
+    @classmethod
+    def for_module(cls, modname):
+        if ('module', modname) in cls.cache:
+            entry = cls.cache['module', modname]
+            if isinstance(entry, MatcodeError):
+                raise entry
+            return entry
+        mod = modules.get(modname)
+        if mod:
+            obj = cls.for_folder(mod.path, modname)
+        else:
+            err = MatcodeError('error importing %r' % modname)
+            cls.cache['module', modname] = err
+            raise err
+        cls.cache['module', modname] = obj
+        return obj
+
+    def __init__(self, source, modname, srcname):
+
+        self.modname = modname      # name of the module
+        self.srcname = srcname      # name of the source file
+        self.source = source        # file-like object yielding source lines
+
+        # will be filled by find_attr_docs()
+        self.attr_docs = None
+        self.tagorder = None
+
+    def find_attr_docs(self, scope=''):
+        """Find class and module-level attributes and their documentation."""
+        if self.attr_docs is not None:
+            return self.attr_docs
+        attr_visitor_collected = {}
+        attr_visitor_tagorder = {}
+        tagnumber = 0
+        mod = modules[self.modname]
+        # walk package tree
+        for k, v in mod.safe_getmembers():
+            if hasattr(v, 'docstring'):
+                attr_visitor_collected[mod.package, k] = v.docstring
+                attr_visitor_tagorder[k] = tagnumber
+                tagnumber += 1
+            if isinstance(v, MatClass):
+                for mk, mv in v.getter('__dict__').items():
+                    tagname = '%s.%s' % (k, mk)
+                    attr_visitor_collected[k, mk] = mv.docstring
+                    attr_visitor_tagorder[tagname] = tagnumber
+                    tagnumber += 1
+        self.attr_docs = attr_visitor_collected
+        self.tagorder = attr_visitor_tagorder
+        return attr_visitor_collected
+
+
 
 def import_matlab_type(objname: str, basedir: str) -> Optional['MatObject']:
     """

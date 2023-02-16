@@ -7,23 +7,17 @@
     :copyright: Copyright 2014 Mark Mikofski
     :license: BSD, see LICENSE for details.
 """
-from .mat_types import (
-    MatModule, MatFunction, MatClass, MatProperty, MatMethod, MatScript, MatApplication, modules,
-    import_matlab_type
-)
 
 import os
 import re
 import traceback
 import inspect
-
-from typing import (
-    TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Type,
-    TypeVar, Union
-)
-
-from docutils.statemachine import ViewList, StringList
 import sphinx.util
+
+from pathlib import Path
+from pygments.token import Token
+from pygments.lexers.markup import RstLexer
+from docutils.statemachine import ViewList, StringList
 from sphinx.locale import _, __
 from sphinx.pycode import PycodeError
 from sphinx.ext.autodoc import (
@@ -36,94 +30,30 @@ from sphinx.ext.autodoc import (
     DataDocumenter as PyDataDocumenter,
     MethodDocumenter as PyMethodDocumenter
 )
-from pygments.lexers.markup import RstLexer
-from pygments.token import Token
+from typing import (
+    TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Type,
+    TypeVar, Union
+)
+from .mat_types import (
+    MatModuleAnalyzer, MatcodeError, import_matlab_type, modules,
+    MatModule, MatFunction, MatClass, MatProperty, MatMethod, MatScript, MatApplication,
+)
 
 
 MAT_DOM = 'sphinxcontrib-matlabdomain'
 logger = sphinx.util.logging.getLogger('matlab-domain')
-mat_ext_sig_re = re.compile(            # QUESTION why is it required to have the explicit module name
-    r'''^ ([+@]?[+@\w.]+::)?            # explicit module name 
-          ([+@]?[+@\w.]+\.)?            # module and/or class name(s)
-          ([+@]?\w+)  \s*               # thing name
-          (?: \((.*)\)                  # optional: arguments
-           (?:\s* -> \s* (.*))?         #           return annotation
-          )? $                          # and nothing more
-          ''', re.VERBOSE)              # QUESTION are the optional arguments and return annotation ever used? -> yes in
 
-# TODO: check MRO's for all classes, attributes and methods!!!
+mat_ext_sig_re = re.compile(
+    r'''^((?:\w+[/\\]+)*)?              # Path
+        ((?:[@+]\w+\.)*)                # Namespace
+        (\w+)                           # Function name
+        $''', re.VERBOSE
+)
 
-
-class MatcodeError(Exception):
-    def __str__(self):
-        res = self.args[0]
-        if len(self.args) > 1:
-            res += ' (exception was: %r)' % self.args[1]
-        return res
-
-
-class MatModuleAnalyzer(object):
-    # cache for analyzer objects -- caches both by module and file name
-    cache = {}
-
-    @classmethod
-    def for_folder(cls, dirname, modname):
-        if ('folder', dirname) in cls.cache:
-            return cls.cache['folder', dirname]
-        obj = cls(None, modname, dirname)
-        cls.cache['folder', dirname] = obj
-        return obj
-
-    @classmethod
-    def for_module(cls, modname):
-        if ('module', modname) in cls.cache:
-            entry = cls.cache['module', modname]
-            if isinstance(entry, MatcodeError):
-                raise entry
-            return entry
-        mod = modules.get(modname)
-        if mod:
-            obj = cls.for_folder(mod.path, modname)
-        else:
-            err = MatcodeError('error importing %r' % modname)
-            cls.cache['module', modname] = err
-            raise err
-        cls.cache['module', modname] = obj
-        return obj
-
-    def __init__(self, source, modname, srcname):
-
-        self.modname = modname      # name of the module
-        self.srcname = srcname      # name of the source file
-        self.source = source        # file-like object yielding source lines
-
-        # will be filled by find_attr_docs()
-        self.attr_docs = None
-        self.tagorder = None
-
-    def find_attr_docs(self, scope=''):
-        """Find class and module-level attributes and their documentation."""
-        if self.attr_docs is not None:
-            return self.attr_docs
-        attr_visitor_collected = {}
-        attr_visitor_tagorder = {}
-        tagnumber = 0
-        mod = modules[self.modname]
-        # walk package tree
-        for k, v in mod.safe_getmembers():
-            if hasattr(v, 'docstring'):
-                attr_visitor_collected[mod.package, k] = v.docstring
-                attr_visitor_tagorder[k] = tagnumber
-                tagnumber += 1
-            if isinstance(v, MatClass):
-                for mk, mv in v.getter('__dict__').items():
-                    tagname = '%s.%s' % (k, mk)
-                    attr_visitor_collected[k, mk] = mv.docstring
-                    attr_visitor_tagorder[tagname] = tagnumber
-                    tagnumber += 1
-        self.attr_docs = attr_visitor_collected
-        self.tagorder = attr_visitor_tagorder
-        return attr_visitor_collected
+mat_namespace_re_pat = re.compile(
+    r'([@+]\w+)\.',                     # Namespace list
+    re.VERBOSE
+)
 
 
 class MatlabDocumenter(PyDocumenter):
@@ -149,10 +79,12 @@ class MatlabDocumenter(PyDocumenter):
         """
         if not self.parse_name():
             # need a module to import
-            logger.warn(
-                'don\'t know which module to import for autodocumenting '
-                '%r (try placing a "module" or "currentmodule" directive '
-                'in the document, or giving an explicit module name)' % self.name
+            if self.env.config.matlab_src_dir:
+                path = self.env.config.matlab_src_dir
+            else:
+                path = str(Path(self.directive._reporter.source).parent)
+            logger.warning(
+                f'don\'t know which module to import for autodocumenting {self.name} when searching in matlab_src_dir: {path} (try placing a "module" or "currentmodule" directive in the document)'
             )
             return
 
@@ -220,30 +152,30 @@ class MatlabDocumenter(PyDocumenter):
         # functions can contain a signature which is then used instead of
         # an autogenerated one
         try:
-            explicit_modname, path, base, args, retann = \
-                 mat_ext_sig_re.match(self.name).groups()
+
+            path, namespace_path, base = mat_ext_sig_re.match(self.name.strip()).groups()
+            namespace = mat_namespace_re_pat.findall(namespace_path)
+
         except AttributeError:
-            logger.warn('invalid signature for auto%s (%r)' %
-                                (self.objtype, self.name))
+            logger.warning(f'{MAT_DOM}: invalid signature for auto {self.objtype} ({self.name})')
             return False
 
-        # support explicit module and class name separation via ::
-        if explicit_modname is not None:
-            modname = explicit_modname[:-2]
-            parents = path and path.rstrip('.').split('.') or []
-        else:
-            modname = None
-            parents = []
+        # In the reference object, the modname refers to the python module the documenter is
+        # currently in, and the objpath contains a list from the main object to the child target.
 
-        self.modname, self.objpath = self.resolve_name(modname, parents, path, base)
+        # The MATLAB equivalent of the modname is the path to the MATLAB file or to the main package
+        # or class folder. In other words, if modname is in the MATLAB path, then the object
+        # (function, class, script that may or may not be inside a package or class folder) is
+        # callable. The objpath then contains the directory list of the package/class folder + the
+        # final of the file.
+
+        self.modname, self.objpath = self.resolve_name(path, base, namespace)
 
         if not self.modname:
             return False
 
-        self.args = args
-        self.retann = retann
-        self.fullname = (self.modname or '') + \
-                        (self.objpath and '.' + '.'.join(self.objpath) or '')
+        self.fullname = '.'.join(self.objpath) or ''
+
         return True
 
     def import_object(self):
@@ -253,23 +185,10 @@ class MatlabDocumenter(PyDocumenter):
         Returns True if successful, False if an error occurred.
         """
 
-        if self.env.config.matlab_relative_src_path:
-            # Get relative path with respect to reporting source file
-            basedir = os.path.split(self.directive._reporter.source)[0]
-        else:
-            # get config_value with absolute path to MATLAB source files
-            basedir = self.env.config.matlab_src_dir
-
-        if self.modname == "*":
-            # Direct search is enabled. Module is equal to src folder.
-            (basedir, self.modname) = os.path.split(basedir)
-
-        if self.objpath:
-            logger.debug('[sphinxcontrib-matlabdomain] from %s import %s',
-                         self.modname, '.'.join(self.objpath))
         try:
-            logger.debug('[sphinxcontrib-matlabdomain] import %s', self.modname)
-            import_matlab_type(self.modname, basedir)
+            logger.debug(f'[{MAT_DOM}] from {self.modname} import {".".join(self.objpath)}')
+            import_matlab_type(self.modname, self.objpath)
+
             parent = None
             obj = self.module = modules[self.modname]
             logger.debug('[sphinxcontrib-matlabdomain] => %r', obj)
@@ -375,7 +294,7 @@ class MatlabDocumenter(PyDocumenter):
                     members.append((mname, self.get_attr(self.object, mname)))
                 except AttributeError:
                     if mname not in analyzed_member_names:
-                        logger.warn('missing attribute %s in object %s'
+                        logger.warning('missing attribute %s in object %s'
                                             % (mname, self.fullname))
         elif self.options.inherited_members:
             # safe_getmembers() uses dir() which pulls in members from all
@@ -663,7 +582,7 @@ class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):
     def parse_name(self):
         ret = super().parse_name()
         if self.args or self.retann:
-            logger.warn('signature arguments or return annotation '
+            logger.warning('signature arguments or return annotation '
                                 'given for automodule %s' % self.fullname)
         return ret
 
@@ -699,7 +618,7 @@ class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):
                 else:
                     raise AttributeError
             except AttributeError:
-                logger.warn(
+                logger.warning(
                     'missing attribute mentioned in :members: or __all__: '
                     'module %s, attribute %s' % (
                     sphinx.util.inspect.safe_getattr(self.object, '__name__', '???'), mname))
@@ -709,24 +628,37 @@ class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):
 class MatModuleLevelDocumenter(MatlabDocumenter):
     """
     Specialized Documenter subclass for objects on module level (functions,
-    classes, data/constants).
+    classes, scripts, mlapps).
     """
-    def resolve_name(self, modname, parents, path, base):
-        if modname is None:
-            if path:
-                modname = path.rstrip('.')
+    supported_file_extensions = ['', '.m', 'mlapp']
+
+    def resolve_name(self, path: str, base: str, namespace: list):
+
+        if self.env.config.matlab_src_dir is None:
+            # The module is the same folder as the source document
+            modname = str(Path(self.directive._reporter.source).parent)
+        else:
+            # Start looking for the module from the matlab source dir
+            src_path = Path(self.env.config.matlab_src_dir)
+            file_path = src_path.joinpath(path, *namespace)
+
+            if file_path.is_dir():
+                modname = str(file_path)
             else:
-                # if documenting a toplevel object without explicit module,
+                # if documenting a toplevel object without explicit path,
                 # it can be contained in another auto directive ...
                 modname = self.env.temp_data.get('autodoc:module')
-                # ... or in the scope of a module directive
                 if not modname:
                     modname = self.env.temp_data.get('mat:module')
 
-                if not modname and self.env.config.matlab_direct_search:
-                    modname = "*"
-                # ... else, it stays None, which means invalid
-        return modname, parents + [base]
+                if path or namespace:
+                    file_path = Path(modname).joinpath(path, *namespace)
+                    if file_path.is_dir():
+                        modname = str(file_path)
+                    else:
+                        modname = None
+
+        return modname, namespace + [base]
 
 
 class MatClassLevelDocumenter(MatlabDocumenter):

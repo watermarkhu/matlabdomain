@@ -1,4 +1,4 @@
-function [output, output2] = lev_doc_example_function(arg1, arg2 )
+function [output, output2] = f_with_argument_blocks(arg1, arg2 )
     % The example documentation for a function. 
     %     
     % In the second paragraph and on, a more elaborate explanation of the function

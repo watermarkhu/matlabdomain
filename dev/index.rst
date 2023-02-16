@@ -17,6 +17,6 @@ Sketches
 DEV
 ===
 
-.. autoclass:: lev_doc_example_class
+.. autoclass:: ClassWithArgumentBlocks
 
-.. autofunction:: lev_doc_example_function
+.. autofunction:: f_with_argument_blocks

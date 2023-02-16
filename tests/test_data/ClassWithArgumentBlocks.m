@@ -1,4 +1,4 @@
-classdef (Abstract) lev_doc_example_class < handle & superclass
+classdef (Abstract) classWithArgumentBlocks < handle & superclass
 % The example documentation for a class
 %
 % Directly under the classdef definition, there should be a section detailing the function 

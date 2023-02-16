@@ -778,11 +778,10 @@ def setup(app):
     app.add_domain(MATLABDomain)
     # autodoc
     app.add_config_value('matlab_src_dir', None, 'env')
+    # If the matlab_src_dir is none. Relative file search is applied  from the path of the source document. This allows for the source documentation to live in the same folders as the code in stead of a separate /docs folder containing the source documents. 
 
     app.add_config_value('matlab_keep_package_prefix', True, 'env')
 
-    app.add_config_value('matlab_direct_search', False, 'env')
-    # Search for matlab callables directly from the path of the source document. This allows for the source documentation to live in the same folders as the code in stead of a separate /docs folder containing the source documents. TODO align with stakeholders on this feature. 
 
     app.add_config_value('matlab_relative_src_path', False, 'env')          
     # Do not need to specify a module. The folder of the matlab_src_dir will be the main module. TODO this should be removed. 
