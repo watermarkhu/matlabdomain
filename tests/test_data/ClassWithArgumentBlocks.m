@@ -1,4 +1,4 @@
-classdef (Abstract) classWithArgumentBlocks < handle & superclass
+classdef (Abstract) ClassWithArgumentBlocks < ClassWithAttributes
 % The example documentation for a class
 %
 % Directly under the classdef definition, there should be a section detailing the function 
@@ -14,7 +14,7 @@ classdef (Abstract) classWithArgumentBlocks < handle & superclass
 %   exampleClass = lev_doc_example(args);
 %  
 
-properties
+properties (Access = {?ClassName1,?ClassName2})
     documentedProp   (1,1) double {MustBePositive} = 1  % If a comment is defined for a (public) property, it will be added to the documentation. 
     undocumentedProp (1,1) double {MustBePositive} = 2
 end
@@ -24,7 +24,7 @@ properties (Access=private)
 end
 
 methods
-    function obj = lev_doc_example_class(arg)
+    function obj = ClassWithArgumentBlocks(arg)
     % Constructor of the example class.
     %
     % Since constructors in MATLAB are just public class methods (never make a construtor private), 

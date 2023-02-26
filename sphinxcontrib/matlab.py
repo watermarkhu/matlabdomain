@@ -12,6 +12,8 @@ from . import mat_directives
 
 import re
 
+from pathlib import Path
+from collections import defaultdict
 from docutils import nodes
 from docutils.parsers.rst import directives, Directive
 
@@ -321,7 +323,7 @@ class MatClasslike(MatObject):
 
 class MatClassmember(MatObject):
     """
-    Description of a class member (methods, attributes).
+    Description of a class member (methods, properties).
     """
 
     def needs_arglist(self):
@@ -375,7 +377,7 @@ class MatClassmember(MatObject):
                                                          clsname)
             else:
                 return _('%s() (%s class method)') % (methname, clsname)
-        elif self.objtype == 'attribute':
+        elif self.objtype == 'property':
             try:
                 clsname, attrname = name.rsplit('.', 1)
             except ValueError:
@@ -384,9 +386,9 @@ class MatClassmember(MatObject):
                 else:
                     return name
             if modname and add_modules:
-                return _('%s (%s.%s attribute)') % (attrname, modname, clsname)
+                return _('%s (%s.%s property)') % (attrname, modname, clsname)
             else:
-                return _('%s (%s attribute)') % (attrname, clsname)
+                return _('%s (%s property)') % (attrname, clsname)
         else:
             return ''
 
@@ -614,7 +616,7 @@ class MATLABDomain(Domain):
         'method':       ObjType(_('method'),        'meth',     'obj'),
         'classmethod':  ObjType(_('class method'),  'meth',     'obj'),
         'staticmethod': ObjType(_('static method'), 'meth',     'obj'),
-        'attribute':    ObjType(_('attribute'),     'attr',     'obj'),
+        'property':    ObjType(_('property'),     'attr',     'obj'),
         'module':       ObjType(_('module'),        'mod',      'obj'),
         'script':       ObjType(_('script'),        'scpt',     'obj'),
         'application':  ObjType(_('application'),   'app',      'obj'),
@@ -628,7 +630,7 @@ class MATLABDomain(Domain):
         'method':          MatClassmember,
         'classmethod':     MatClassmember,          # QUESTION Does matlab even have class methods?
         'staticmethod':    MatClassmember,
-        'attribute':       MatClassmember,          # QUESTION matlab's attributes are called properties, python's properties are matlab properties with get and set methods. Is this supported?
+        'property':        MatClassmember,          
         'module':          MatModule,               
         'currentmodule':   MatCurrentModule,        # QUESTION do we need both module and currentmodule, what is the difference?
         'decorator':       MatDecoratorFunction,    # QUESTION does matlab have decorators?
@@ -782,11 +784,7 @@ def setup(app):
 
     app.add_config_value('matlab_keep_package_prefix', True, 'env')
 
-
-    app.add_config_value('matlab_relative_src_path', False, 'env')          
-    # Do not need to specify a module. The folder of the matlab_src_dir will be the main module. TODO this should be removed. 
-
-    app.add_config_value('matlab_argument_docstrings', True, 'env')\
+    app.add_config_value('matlab_argument_docstrings', True, 'env')
     # Use the type and docstring in the arguments block in functions and methods. Will overwrite any PARAMETERS/RETURNS block in the function/method docstring. 
 
     app.registry.add_documenter('mat:module', doc.MatModuleDocumenter)
@@ -814,20 +812,11 @@ def setup(app):
                                 'autoscript',
                                 mat_directives.MatlabAutodocDirective)
 
-    app.registry.add_documenter('mat:attribute', doc.MatAttributeDocumenter)
+    app.registry.add_documenter('mat:property', doc.MatPropertyDocumenter)
     app.add_directive_to_domain('mat',
-                                'autoattribute',
+                                'autoproperty',
                                 mat_directives.MatlabAutodocDirective)
 
-    # app.registry.add_documenter('mat:data', doc.MatDataDocumenter)
-    # app.add_directive_to_domain('mat',
-    #                             'autodata',
-    #                             mat_directives.MatlabAutodocDirective)
-
-    # app.registry.add_documenter('mat:instanceattribute', doc.MatInstanceAttributeDocumenter)
-    # app.add_directive_to_domain('mat',
-    #                             'autoinstanceattribute',
-    #                             mat_directives.MatlabAutodocDirective)
 
     app.registry.add_documenter('mat:application', doc.MatApplicationDocumenter)
     app.add_directive_to_domain('mat',
@@ -836,5 +825,17 @@ def setup(app):
 
     app.add_autodoc_attrgetter(doc.MatModule, doc.MatModule.getter)
     app.add_autodoc_attrgetter(doc.MatClass, doc.MatClass.getter)
+
+
+    # Pre-index all MATLAB source files in order to deal with inheritance. 
+    srcdir = Path(app.config._raw_config.get('matlab_src_dir') or app.config.overrides.get('matlab_src_dir')).resolve()
+    app.mat_objects = {str(path): None for path in srcdir.rglob('*') if path.suffix in {'.m', '.mlapp'}}
+    app.mat_handles = defaultdict(list)
+    for filepath in app.mat_objects.keys():
+        try: 
+            _, namespace, objpath, _ = doc.parse_matlab_path(filepath)
+            app.mat_handles['.'.join([name[1:] for name in namespace] + [objpath[0]])].append(filepath)
+        except Exception:
+            logger.debug('[%s] Could not index %s.' % (MAT_DOM, filepath))
 
     return {'parallel_read_safe':False}

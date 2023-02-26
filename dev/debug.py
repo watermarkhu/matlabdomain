@@ -15,8 +15,6 @@ app = Sphinx(
     confoverrides = dict(
         root_doc='index',
         matlab_src_dir=str(cwd.parent / 'tests' / 'test_data'),
-        matlab_direct_search = False,
-        matlab_relative_src_path = True
     ),
     status = sys.stdout,
     warning = sys.stderr,

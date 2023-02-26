@@ -12,205 +12,38 @@ import re
 import sphinx.util
 import charset_normalizer
 import xml.etree.ElementTree as ET
-from copy import copy
 from abc import ABC
+from pathlib import Path
 from zipfile import ZipFile
 from collections import defaultdict
-from typing import Tuple, Generator, Optional, List
+from typing import Tuple, Generator, Optional, List, Union
 from pygments.token import Token, _TokenType
-from pygments.lexers.matlab import MatlabLexer as MatlabLexer
+from pygments.lexers.matlab import MatlabLexer
+
 
 MAT_DOM = 'sphinxcontrib-matlabdomain'
 logger = sphinx.util.logging.getLogger('matlab-domain')
-modules = {}
 TokenType = Tuple[_TokenType, str]
 TksType = Generator[TokenType, None, None]
-
-# create some MATLAB objects
-# TODO: +packages & @class folders
-# TODO: subfunctions (not nested) and private folders/functions/classes
-
-class MatcodeError(Exception):
-    def __str__(self):
-        res = self.args[0]
-        if len(self.args) > 1:
-            res += ' (exception was: %r)' % self.args[1]
-        return res
-
-
-class MatModuleAnalyzer(object):
-    # cache for analyzer objects -- caches both by module and file name
-    cache = {}
-
-    @classmethod
-    def for_folder(cls, dirname, modname):
-        if ('folder', dirname) in cls.cache:
-            return cls.cache['folder', dirname]
-        obj = cls(None, modname, dirname)
-        cls.cache['folder', dirname] = obj
-        return obj
-
-    @classmethod
-    def for_module(cls, modname):
-        if ('module', modname) in cls.cache:
-            entry = cls.cache['module', modname]
-            if isinstance(entry, MatcodeError):
-                raise entry
-            return entry
-        mod = modules.get(modname)
-        if mod:
-            obj = cls.for_folder(mod.path, modname)
-        else:
-            err = MatcodeError('error importing %r' % modname)
-            cls.cache['module', modname] = err
-            raise err
-        cls.cache['module', modname] = obj
-        return obj
-
-    def __init__(self, source, modname, srcname):
-
-        self.modname = modname      # name of the module
-        self.srcname = srcname      # name of the source file
-        self.source = source        # file-like object yielding source lines
-
-        # will be filled by find_attr_docs()
-        self.attr_docs = None
-        self.tagorder = None
-
-    def find_attr_docs(self, scope=''):
-        """Find class and module-level attributes and their documentation."""
-        if self.attr_docs is not None:
-            return self.attr_docs
-        attr_visitor_collected = {}
-        attr_visitor_tagorder = {}
-        tagnumber = 0
-        mod = modules[self.modname]
-        # walk package tree
-        for k, v in mod.safe_getmembers():
-            if hasattr(v, 'docstring'):
-                attr_visitor_collected[mod.package, k] = v.docstring
-                attr_visitor_tagorder[k] = tagnumber
-                tagnumber += 1
-            if isinstance(v, MatClass):
-                for mk, mv in v.getter('__dict__').items():
-                    tagname = '%s.%s' % (k, mk)
-                    attr_visitor_collected[k, mk] = mv.docstring
-                    attr_visitor_tagorder[tagname] = tagnumber
-                    tagnumber += 1
-        self.attr_docs = attr_visitor_collected
-        self.tagorder = attr_visitor_tagorder
-        return attr_visitor_collected
-
-
-
-def import_matlab_type(objname: str, basedir: str) -> Optional['MatObject']:
-    """
-    Makes a MatObject.
-
-    :param objname: Name of object to import_matlab_type without file extension.
-    :type objname: str
-
-    Assumes that object is contained in a folder described by a namespace
-    composed of modules and packages connected by dots, and that the top-
-    level module or package is in the Sphinx config value
-    ``matlab_src_dir``. For example:
-    ``my_project.my_package.sub_pkg.MyClass`` represents either a folder
-    ``basedir/my_project/my_package/sub_pkg/MyClass`` or an mfile
-    ``basedir/my_project/my_package/sub_pkg/ClassExample.m``. If there is both a
-    folder and an mfile with the same name, the folder takes precedence
-    over the mfile.
-    """
-    # no object name given
-    if not objname:
-        return None
-    # matlab modules are really packages
-    package = objname
-    # convert namespace to path
-    objname = objname.replace('.', os.sep)  # objname may have dots
-    # separate path from file/folder name
-    path, name = os.path.split(objname)
-    # make a full path out of basedir and objname
-    fullpath = os.path.join(basedir, objname)  # objname fullpath
-    # package folders imported over mfile with same name
-    if os.path.isdir(fullpath):
-        mod = modules.get(package)
-        if mod:
-            logger.debug(f'[{MAT_DOM}] mod {package} already loaded.')
-            return mod
-        else:
-            logger.debug(f'[{MAT_DOM}] import_matlab_type {package} from\n\t{fullpath}.')
-            return MatModule(name, fullpath, package, basedir)  # import package
-
-    elif os.path.isfile(fullpath + '.m'):
-        ##################################################################################
-        # Use Pygments to parse mfile to determine type: function, classdef or script
-        mfile = fullpath + '.m'
-        logger.debug(f'[{MAT_DOM}] import_matlab_type {package} from\n\t{mfile}.')
-
-        # Read file with correct encoding via charset_normalizer
-        full_code = str(charset_normalizer.from_path(mfile).best()).replace('\r\n', '\n')
-        modname = path.replace(os.sep, '.')  # module name
-
-        # Preprocessing the codestring
-        code = code_fix_function_signatures(
-            code_remove_line_continuations(code_remove_comment_header(full_code))
-        )
-        tks = MatlabLexer().get_tokens(code)
-        token = next(tks)
-
-        if token == (Token.Keyword, 'classdef'):
-            logger.debug(f'[{MAT_DOM}] parsing classdef {name} from {modname}.')
-            return MatClass(name, modname, tks, basedir)
-        elif token == (Token.Keyword, 'function'):
-            logger.debug(f'[{MAT_DOM}] parsing function {name} from {modname}.')
-            return MatFunction(name, modname, tks)
-        else:
-            logger.debug(f'[{MAT_DOM}] parsing script {name} from {modname}.')
-            return MatScript(name, modname, tks, token)
-
-    elif os.path.isfile(fullpath + '.mlapp'):
-        ##################################################################################
-        # Uses ZipFile to read the metadata/appMetadata.xml file and the metadata/coreProperties.xml
-        # file description tags. Parses XML content using ElementTree.
-        # TODO: We could use this method to parse other matlab binaries
-
-        mlappfile = fullpath + '.mlapp'
-        logger.debug(f'[{MAT_DOM}] import_matlab_type {package} from\n\t{mlappfile}.')
-
-        # Read contents of meta-data file. This might change in different Matlab versions
-        with ZipFile(mlappfile, 'r') as mlapp:
-            meta = ET.fromstring(mlapp.read('metadata/appMetadata.xml'))
-            core = ET.fromstring(mlapp.read('metadata/coreProperties.xml'))
-
-        metaNs = {'ns': "http://schemas.mathworks.com/appDesigner/app/2017/appMetadata"}
-        coreNs = {
-            'cp': "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
-            'dc': "http://purl.org/dc/elements/1.1/",
-            'dcmitype': "http://purl.org/dc/dcmitype/",
-            'dcterms': "http://purl.org/dc/terms/",
-            'xsi': "http://www.w3.org/2001/XMLSchema-instance"
-        }
-
-        coreDesc = core.find('dc:description', coreNs)
-        metaDesc = meta.find('ns:description', metaNs)
-
-        doc = []
-        if coreDesc is not None:
-            doc.append(coreDesc.text)
-        if metaDesc is not None:
-            doc.append(metaDesc.text)
-        docstring = '\n\n'.join(doc)
-
-        modname = path.replace(os.sep, '.')  # module name
-
-        return MatApplication(name, modname, docstring)
-    else:
-        return None
 
 
 ######################################################################################
 #                               .m file pre-processing
 ######################################################################################
+
+def code_tokenize(mfile: Union[str, Path], remove_comment_header: bool = True):
+
+    # Read file with correct encoding via charset_normalizer
+    code = str(charset_normalizer.from_path(mfile).best()).replace('\r\n', '\n') # module name
+
+    if remove_comment_header:
+        code = code_remove_comment_header(code)
+    
+    # Preprocessing the codestring
+    code = code_fix_function_signatures(
+        code_remove_line_continuations(code)
+    )
+    return MatlabLexer().get_tokens(code)
 
 
 def code_remove_comment_header(code: str) -> str:
@@ -338,14 +171,14 @@ def tks_code_literal(tks: Generator, token: Optional[TokenType] = None) -> Tuple
     statement_endings = [','] + list(closing_punctionations.values())
     while expected_close or not any(
         [
-            token[0] is Token.Punctuation and token[1] in statement_endings,
+            token[1] in statement_endings,
             token[0] is Token.Text.Whitespace and '\n' in token[1], token[0] is Token.Comment
         ]
     ):
-        if token[0] is Token.Punctuation and token[1] in closing_punctionations.keys():
+        if token[1] in closing_punctionations.keys():
             # literal has a backet opener, thus a corresponding close is expected
             expected_close.append(closing_punctionations[token[1]])
-        elif token[0] is Token.Punctuation and token[1] in closing_punctionations.values():
+        elif token[1] in closing_punctionations.values():
             # All closing brackets must follow the expected order.
             if token[1] != expected_close.pop():
                 raise IndexError
@@ -466,9 +299,11 @@ class MatProperty(MatObject):
 
     The 'Prop' token is already removed from the token list and used for the constructor. 
     """
-    def __init__(self, name: str, attrs: dict = {}) -> None:
+    def __init__(self, cls: 'MatClass', name: str, attrs: dict = {}, index: int = 0) -> None:
+        self.cls = cls
         self.name = name
         self.attrs = attrs
+        self.index = index
 
     def parse_tokens(self, tks: TksType, token: TokenType):
         """
@@ -538,6 +373,12 @@ class MatProperty(MatObject):
 
 
 class MatArgument(MatProperty):
+
+    def __init__(self, name: str, attrs: dict = {}, index: int = 0) -> None:
+        self.name = name
+        self.attrs = attrs
+        self.index = index
+
     def parse_tokens(self, tks: TksType, token: TokenType):
         if token == (Token.Punctuation, '.'):
             self.field = next(tks)[1]
@@ -576,12 +417,15 @@ class AttributeBlock(ABC):
             while token and token != (Token.Punctuation, ')'):
                 if token[0] is Token.Name or token[0] is Token.Name.Builtin:
                     token = self.parse_attribute(token[1], tks)
-                elif token[0] is Token.Text:
+                elif token[0] is Token.Text and token[1] != '=':
                     text_attribute += token[1]
                     token = tks_next(tks)
-                elif token == (Token.Punctuation, ','):
+                elif token == (Token.Punctuation, ',') or token == (Token.Text, '='):
                     if text_attribute:
-                        token = self.parse_attribute(text_attribute, tks)
+                        if token == (Token.Text, '='):
+                            token = self.parse_attribute(text_attribute, tks, token)
+                        else:
+                            token = self.parse_attribute(text_attribute, tks)
                         text_attribute = ''
                     else:
                         token = tks_next(tks)
@@ -592,17 +436,19 @@ class AttributeBlock(ABC):
                 if text_attribute:
                     token = self.parse_attribute(text_attribute, tks)
 
-    def parse_attribute(self, attribute: str, tks: TksType) -> TokenType:
+    def parse_attribute(self, attribute: str, tks: TksType, token: Optional[TokenType] = None) -> TokenType:
         '''
         Parses a single attribute.
 
         The attribute must exist in the dictionary ``attrs_types``. Each attribute can be either a boolean or a list. If the type if boolean, the value will default to True if the attribute is present. Otherwise the parser will look for the ``=`` sign and the value after. 
         '''
 
+        if not token:
+            token = tks_next(tks)
+
         if attribute in self.attr_types.keys():
 
             if self.attr_types[attribute] is bool:
-                token = tks_next(tks)
                 if token == (Token.Punctuation, '='):
                     token = tks_next(tks)
                     if token[1] in ['true', 'True']:
@@ -620,9 +466,13 @@ class AttributeBlock(ABC):
                     self.attrs[attribute] = True
 
             elif self.attr_types[attribute] is list:
-                tks_next(tks)
                 value, token = tks_code_literal(tks)
-                self.attrs[attribute] = value
+
+                # If value is a MATLAB cell, put it in a list
+                if value[0] == '{' and value[-1] == '}':
+                    self.attrs[attribute] = [v.strip() for v in value.strip('{}').split(',')]
+                else:
+                    self.attrs[attribute] = value
 
         else:
             msg = f'[{MAT_DOM}] Unsupported attribute {attribute} for {self.__class__.__name__}.'
@@ -771,7 +621,7 @@ class MatModule(MatObject):
                 msg = '[%s] mod %s already has attr %s.'
                 logger.debug(msg, MAT_DOM, self, name)
                 return getattr(self, name)
-            attr = import_matlab_type('.'.join([self.package, name]), self.basedir)
+            attr = import_matlab_object('.'.join([self.package, name]), self.basedir)
             if attr:
                 setattr(self, name, attr)
                 msg = '[%s] attr %s imported from mod %s.'
@@ -808,18 +658,26 @@ class MatFunction(MatObject):
     # =====================================================================
 
     # MATLAB keywords that increment keyword-end pair count
-    matlab_end_keywords = {'for', 'if', 'switch', 'try', 'while', 'parfor'}
+    matlab_end_keywords = {'function', 'for', 'if', 'switch', 'try', 'while', 'parfor'}
 
-    def __init__(self, name: str, modname: str, tks: TksType):
-        super().__init__(name)
-
-        self.module = modname  #: Path of folder containing :class:`MatObject`.
+    def __init__(self, name: str, module: str, file: str, tks: Optional[TksType] = None):
+        
+        self.name = name
+        self.module = module  #: Path of folder containing :class:`MatObject`.
+        self.file = file
         self.docstring = ''  #: docstring
         self.retv = []  #: output args
         self.retv_block = {}
         self.args = []  #: input args
         self.args_block = {}
         self.rem_tks = []
+
+        if not tks:
+            tks = code_tokenize(Path(module) / (name + '.m'))
+            token = next(tks)
+            if token != (Token.Keyword, 'function'):
+                logger.warning(f'{MAT_DOM} could not import function {name}. Use a different autodirective.')
+                raise ImportError
 
         # =====================================================================
 
@@ -974,7 +832,7 @@ class PropertiesBlock(AttributeBlock):
         'TestParameter': bool
     }
 
-    def __init__(self, tks: TksType):
+    def __init__(self, tks: TksType, cls: 'MatClass'):
         super().__init__(tks)
         self.properties = {}
 
@@ -982,10 +840,11 @@ class PropertiesBlock(AttributeBlock):
         while token and token != (Token.Keyword, 'end'):
             if token[0] is Token.Name:
                 prop = token[1]
-                property = MatProperty(prop, attrs=self.attrs)
+                property = MatProperty(cls, prop, attrs=self.attrs, index=cls.item_index)
                 token = tks_next(tks, skip_comment=False)
                 token = property.parse_tokens(tks, token)
                 self.properties[prop] = property
+                cls.item_index += 1
             else:
                 self.warning("Expected a property here.")
                 raise IndexError
@@ -1018,7 +877,7 @@ class MethodsBlock(AttributeBlock):
 
         token = tks_next(tks, skip_newline=True)
         while token and token != (Token.Keyword, 'end'):
-            method = MatMethod(cls, self.attrs, tks)
+            method = MatMethod(cls, attrs=self.attrs, tks=tks, index=cls.item_index)
 
             # Set to constructor
             if method.name == cls.name:
@@ -1031,17 +890,20 @@ class MethodsBlock(AttributeBlock):
                     method.args_block.pop(obj)
 
             self.methods[method.name] = method
+            cls.item_index += 1
             token = tks_next(tks, skip_newline=True)
+
 
 
 class MatMethod(MatFunction):
     '''
     A MATLAB method
     '''
-    def __init__(self, cls: 'MatClass', attrs: dict, tks: TksType):
-        super().__init__(name=None, modname=cls.module, tks=tks)
+    def __init__(self, cls: 'MatClass', attrs: dict, tks: TksType, index: int = 0):
+        super().__init__(name=None, module=cls.module, file=cls.file, tks=tks)
         self.cls = cls
         self.attrs = attrs
+        self.index = index
 
 
 class MatClass(AttributeBlock, MatObject):
@@ -1056,18 +918,27 @@ class MatClass(AttributeBlock, MatObject):
         'Sealed': bool
     }
 
-    def __init__(self, name: str, modname: str, tks: TksType, basedir: str):
+    def __init__(self, name: str, module: str, file: str, tks: Optional[TksType] = None):
 
-        super().__init__(tks)
-        super(AttributeBlock, self).__init__(name)
-
-        self.module = modname  #: Path of folder containing :class:`MatObject`.
-        self.basedir = basedir
+        self.name = name
+        self.module = module  #: Path of folder containing :class:`MatObject`.
+        self.file = file
         self.bases = []  #: list of class superclasses
         self.docstring = ''  #: docstring
+        self.constructor = None
         self.properties = {}  #: dictionary of class properties
         self.methods = {}  #: dictionary of class methods
+        self.item_index = 0
 
+        if not tks:
+            tks = code_tokenize(Path(module) / (name + '.m'))
+            token = next(tks)
+            if token != (Token.Keyword, 'classdef'):
+                logger.warning(f'{MAT_DOM} could not import class {name}. Use a different autodirective.')
+                raise ImportError
+
+        # Get class attributes
+        super().__init__(tks) 
         # =====================================================================
 
         token = tks_next(tks)
@@ -1103,13 +974,19 @@ class MatClass(AttributeBlock, MatObject):
 
         while token and token != (Token.Keyword, 'end'):
             if token == (Token.Keyword, 'properties'):
-                self.properties.update(PropertiesBlock(tks).properties)
+                self.properties.update(PropertiesBlock(tks, cls=self).properties)
             elif token == (Token.Keyword, 'methods'):
                 self.methods.update(MethodsBlock(tks=tks, cls=self).methods)
             else:
                 self.warning()
 
             token = tks_next(tks, skip_newline=True)
+        
+        # Get constructor
+        for methodname, method in self.methods.items():
+            if method.attrs.get("Constructor"):
+                self.constructor = self.methods.pop(methodname)
+                break
 
     @property
     def __module__(self):
@@ -1120,45 +997,9 @@ class MatClass(AttributeBlock, MatObject):
         return self.docstring
 
     @property
-    def __bases__(self):
-        bases_ = dict.fromkeys(self.bases)  # make copy of bases
-        num_pths = len(self.basedir.split(os.sep))
-        # walk tree to find bases
-        for root, dirs, files in os.walk(self.basedir):
-            # namespace defined by root, doesn't include basedir
-            root_mod = '.'.join(root.split(os.sep)[num_pths:])
-            # don't visit vcs directories
-            for vcs in ['.git', '.hg', '.svn', '.bzr']:
-                if vcs in dirs:
-                    dirs.remove(vcs)
-            # only visit mfiles
-            for f in tuple(files):
-                if not f.endswith('.m'):
-                    files.remove(f)
-            # search folders
-            for b in self.bases:
-                # search folders
-                for m in dirs:
-                    # check if module has been matlabified already
-                    mod_name = '.'.join([root_mod, m]).lstrip('.')
-                    mod = modules.get(mod_name)
-                    if not mod:
-                        continue
-                    # check if base class is attr of module
-                    b_ = mod.getter(b, None)
-                    if not b_:
-                        b_ = mod.getter(b.lstrip(m.lstrip('+')), None)
-                    if b_:
-                        bases_[b] = b_
-                        break
-                if bases_[b]:
-                    continue
-                if b + '.m' in files:
-                    mfile = os.path.join(root, b) + '.m'
-                    bases_[b] = MatObject.parse_mfile(mfile, b, root)
-            # keep walking tree
-        # no matching folders or mfiles
-        return bases_
+    def members(self):
+        return {**self.properties, **self.methods}
+
 
     def getter(self, name, *defargs):
         """
@@ -1171,7 +1012,7 @@ class MatClass(AttributeBlock, MatObject):
         elif name == '__module__':
             return self.__module__
         elif name == '__bases__':
-            return self.__bases__
+            return self.bases
         elif name in self.properties:
             return self.properties[name]
         elif name in self.methods:
@@ -1188,9 +1029,15 @@ class MatClass(AttributeBlock, MatObject):
 
 
 class MatScript(MatObject):
-    def __init__(self, name: str, modname: str, tks: TksType, token: TokenType):
-        super().__init__(name)
-        self.module = modname
+    def __init__(self, name: str, module: str, file: str, tks: Optional[TksType] = None):
+        self.name = name
+        self.module = module
+        self.file = file
+
+        if not tks:
+            tks = code_tokenize(Path(module) / (name + '.m'), remove_comment_header=False)
+            
+        token = next(tks)
         self.docstring, token = tks_docstring(tks, token)
 
     @property

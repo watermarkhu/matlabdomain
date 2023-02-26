@@ -10,8 +10,6 @@
 
 import os
 import re
-import traceback
-import inspect
 import sphinx.util
 
 from pathlib import Path
@@ -19,9 +17,10 @@ from pygments.token import Token
 from pygments.lexers.markup import RstLexer
 from docutils.statemachine import ViewList, StringList
 from sphinx.locale import _, __
-from sphinx.pycode import PycodeError
 from sphinx.ext.autodoc import (
-    identity, Options, ALL, INSTANCEATTR, members_option, SUPPRESS, annotation_option, bool_option,
+    identity, Options, ALL, INSTANCEATTR, SUPPRESS,
+    members_option, inherited_members_option, exclude_members_option,
+    member_order_option, annotation_option, bool_option,
     Documenter as PyDocumenter,
     ModuleDocumenter as PyModuleDocumenter,
     FunctionDocumenter as PyFunctionDocumenter,
@@ -35,25 +34,35 @@ from typing import (
     TypeVar, Union
 )
 from .mat_types import (
-    MatModuleAnalyzer, MatcodeError, import_matlab_type, modules,
-    MatModule, MatFunction, MatClass, MatProperty, MatMethod, MatScript, MatApplication,
+    MatObject, MatModule, MatFunction, MatClass, MatProperty, MatMethod, MatScript, MatApplication,
 )
 
 
 MAT_DOM = 'sphinxcontrib-matlabdomain'
 logger = sphinx.util.logging.getLogger('matlab-domain')
-
 mat_ext_sig_re = re.compile(
-    r'''^((?:\w+[/\\]+)*)?              # Path
-        ((?:[@+]\w+\.)*)                # Namespace
-        (\w+)                           # Function name
+    r'''^
+        (
+            (?:
+                (?:\.\.[/\\])+|[/\\\.]+      # relative path up
+            )?                              # ^optional
+            (?:\w+[/\\])+                   # relative path down
+        )?                              # path
+        ((?:[@+]\w+[/\\\.])*)           # namespace
+        ((?:\w+\.)*)                    # object path
+        (\w+)                           # object name
+        (?:\.\w+)?                      # extension
         $''', re.VERBOSE
 )
 
-mat_namespace_re_pat = re.compile(
-    r'([@+]\w+)\.',                     # Namespace list
-    re.VERBOSE
-)
+def parse_matlab_path(fullpath: str):
+
+    path, namespace_path, obj_path, base = mat_ext_sig_re.match(fullpath.strip()).groups()
+    namespace = re.split(r'[/\\\.]+', namespace_path.strip(r'/\\\.')) if namespace_path else []
+    objpath = obj_path.strip('.').split('.') if obj_path else []
+
+    return (path, namespace, objpath, base)
+
 
 
 class MatlabDocumenter(PyDocumenter):
@@ -62,11 +71,12 @@ class MatlabDocumenter(PyDocumenter):
     """
     domain = 'mat'
 
+    def __repr__(self) -> str:
+        return '<Autodocumenter [%s] %s>' % (self.objtype, self.name)
+
     def generate(
         self,
         more_content: Optional[StringList] = None,
-        real_modname: str = None,
-        check_module: bool = False,
         all_members: bool = False
     ) -> None:
         """Generate reST for the object given by *self.name*, and possibly for
@@ -77,6 +87,14 @@ class MatlabDocumenter(PyDocumenter):
         True, only generate if the object is defined in the module name it is
         imported from. If *all_members* is True, document all members.
         """
+        if self.env.config.matlab_src_dir is None:
+            # The module is the same folder as the source document
+            self.src_path = str(Path(self.directive._reporter.source).parent)
+        else:
+            # Start looking for the module from the matlab source dir
+            self.src_path = Path(self.env.config.matlab_src_dir)
+
+
         if not self.parse_name():
             # need a module to import
             if self.env.config.matlab_src_dir:
@@ -91,34 +109,6 @@ class MatlabDocumenter(PyDocumenter):
         # now, import the module and get object to document
         if not self.import_object():
             return
-
-        # If there is no real module defined, figure out which to use.
-        # The real module is used in the module analyzer to look up the module
-        # where the attribute documentation would actually be found in.
-        # This is used for situations where you have a module that collects the
-        # functions and classes of internal submodules.
-        self.real_modname = real_modname or self.get_real_modname()
-
-        # try to also get a source code analyzer for attribute docs
-        try:
-            self.analyzer = MatModuleAnalyzer.for_module(self.real_modname)
-            # parse right now, to get PycodeErrors on parsing (results will
-            # be cached anyway)
-            self.analyzer.find_attr_docs()
-        except PycodeError as err:
-            self.env.app.debug('[sphinxcontrib-matlabdomain] module analyzer failed: %s', err)
-            # no source file -- e.g. for builtin and C modules
-            self.analyzer = None
-            # at least add the module.__file__ as a dependency
-            if hasattr(self.module, '__file__') and self.module.__file__:
-                self.directive.record_dependencies.add(self.module.__file__)
-        else:
-            self.directive.record_dependencies.add(self.analyzer.srcname)
-
-        # check __module__ of object (for members not given explicitly)
-        if check_module:
-            if not self.check_module():
-                return
 
         # make sure that the result starts with an empty line.  This is
         # necessary for some situations where another directive preprocesses
@@ -141,7 +131,6 @@ class MatlabDocumenter(PyDocumenter):
         # document members, if possible
         self.document_members(all_members)
 
-
     def parse_name(self):
         """Determine what module to import and what attribute to document.
 
@@ -152,9 +141,7 @@ class MatlabDocumenter(PyDocumenter):
         # functions can contain a signature which is then used instead of
         # an autogenerated one
         try:
-
-            path, namespace_path, base = mat_ext_sig_re.match(self.name.strip()).groups()
-            namespace = mat_namespace_re_pat.findall(namespace_path)
+            (path, self.namespace, objpath, base) = parse_matlab_path(self.name)
 
         except AttributeError:
             logger.warning(f'{MAT_DOM}: invalid signature for auto {self.objtype} ({self.name})')
@@ -169,12 +156,12 @@ class MatlabDocumenter(PyDocumenter):
         # callable. The objpath then contains the directory list of the package/class folder + the
         # final of the file.
 
-        self.modname, self.objpath = self.resolve_name(path, base, namespace)
+        self.modname, self.objpath = self.resolve_name(path, self.namespace, objpath, base)
 
         if not self.modname:
             return False
 
-        self.fullname = '.'.join(self.objpath) or ''
+        self.fullname = '.'.join(self.namespace + self.objpath) or ''
 
         return True
 
@@ -184,64 +171,93 @@ class MatlabDocumenter(PyDocumenter):
 
         Returns True if successful, False if an error occurred.
         """
-
         try:
-            logger.debug(f'[{MAT_DOM}] from {self.modname} import {".".join(self.objpath)}')
-            import_matlab_type(self.modname, self.objpath)
-
-            parent = None
-            obj = self.module = modules[self.modname]
-            logger.debug('[sphinxcontrib-matlabdomain] => %r', obj)
-            for part in self.objpath:
-                parent = obj
-                logger.debug('[sphinxcontrib-matlabdomain] getattr(_, %r)', part)
-                obj = self.get_attr(obj, part)
-                logger.debug('[sphinxcontrib-matlabdomain] => %r', obj)
-                self.object_name = part
-
-            if obj:
-                self.parent = parent
-                self.object = obj
-                return True
+            if self.objpath is None:
+                msg = f'[{MAT_DOM}] import {self.modname}'
             else:
-                errmsg = '[sphinxcontrib-matlabdomain]: could not find %s %r in module %r' % \
-                         (self.objtype, '.'.join(self.objpath), self.modname)
-                logger.warning(errmsg)
+                msg = f'[{MAT_DOM}] from {self.modname} import {".".join(self.objpath)}'
+            logger.debug(msg)
+
+            if self.objtype in {'function', 'class', 'script'}:
+                if len(self.objpath) != 1:
+                    logger.warning(f'{MAT_DOM} cannot import {".".join(self.objpath)}, which is not a {self.objtype}.')
+                    return None
+
+                self.object = self.import_m_file(self.objpath[0], self.objtype, self.modname)
+                return True if self.object else False
+
+            elif self.objtype in {'property', 'method'}:
+                if self.object:
+                    return True
+                else:
+                    cls = self.import_m_file(self.objpath[0], 'class', self.modname)
+                    if cls:
+                        self.object = cls.members.get(self.objpath[1])
+                        return True if self.object else False
+                    else:
+                        return False
+            # TODO elif mlapp method property...
+            else:
+                logger.warning(f'{MAT_DOM} could not import {self.objtype} {self.objpath}.')
                 return False
+
         # this used to only catch SyntaxError, ImportError and AttributeError,
         # but importing modules with side effects can raise all kinds of errors
-        except Exception:
-            if self.objpath:
-                errmsg = '[sphinxcontrib-matlabdomain]: failed to import %s %r from module %r' % \
-                         (self.objtype, '.'.join(self.objpath), self.modname)
-            else:
-                errmsg = '[sphinxcontrib-matlabdomain]: failed to import %s %r' % \
-                         (self.objtype, self.fullname)
-            errmsg += '; the following exception was raised:\n%s' % \
-                      traceback.format_exc()
-            logger.warning(errmsg)
+        except Exception as exc:
+
+            logger.warning(exc.args[0], type='autodoc', subtype='import_object')
             self.env.note_reread()
             return False
 
+    def import_m_file(self, name: str, objtype: str, modname: str) -> MatObject:
+
+        mfilepath = Path(modname) / (name + '.m')
+        mfile = str(mfilepath)
+
+        if not mfilepath.is_file():
+            logger.warning(f'{MAT_DOM} cannot import {objtype} {name}. File does not exist.')
+            return None
+
+        if self.env.app.mat_objects.get(mfile):
+            # Load MatObject if previously already imported
+            logger.debug(f'[{MAT_DOM}] {objtype} {name} already loaded.')
+            object =  self.env.app.mat_objects.get(mfile)
+
+        else:
+            # Import object and tokenize as MatObject
+            logger.debug(f'[{MAT_DOM}] parsing {objtype} {name}.')
+            mfilepath = Path(modname) / (name + '.m')
+            mfile = str(mfilepath)
+
+            # Handle not found in glob from matlab src dir. Save handle path/modname
+            if str(mfilepath) not in self.env.app.mat_handles[name]:
+                self.env.app.mat_handles[name].append(str(mfilepath))
+
+            if not mfilepath.is_file():
+                logger.warning(f'{MAT_DOM} cannot import {objtype} {name}. File does not exist.')
+                return None
+
+            if objtype == 'class':
+                object = MatClass(name, module=modname, file=mfile)
+                # Import bases
+                for baseName in object.bases:
+                    baseModname = str(Path(self.env.app.mat_handles[baseName][-1]).parent)
+                    self.import_m_file(name=baseName, objtype='class', modname=baseModname)
+
+            elif objtype == 'function':
+                object = MatFunction(name, module=modname, file=mfile)
+            elif objtype == 'script':
+                object = MatScript(name, module=modname, file=mfile)
+            else:
+                return None
+            self.env.app.mat_objects[mfile] = object
+
+        return object
+
     def add_content(self, more_content, get_doc=True):
         """Add content from docstrings, attribute documentation and user."""
-        # set sourcename and add content from attribute documentation
-        if self.analyzer:
-            # prevent encoding errors when the file name is non-ASCII
-            if not isinstance(self.analyzer.srcname, str):
-                filename = str(self.analyzer.srcname)
-            else:
-                filename = self.analyzer.srcname
-            sourcename = '%s:docstring of %s' % (filename, self.fullname)
 
-            attr_docs = self.analyzer.find_attr_docs()
-            if self.objpath:
-                key = ('.'.join(self.objpath[:-1]), self.objpath[-1])
-                if key in attr_docs:
-                    get_doc = False
-                    docstrings = [sphinx.util.docstrings.prepare_docstring(attr_docs[key])]
-        else:
-            sourcename = 'docstring of %s' % self.fullname
+        sourcename = 'docstring of %s' % self.fullname
 
         # add content from docstrings
         if get_doc:
@@ -261,65 +277,270 @@ class MatlabDocumenter(PyDocumenter):
             for line, src in zip(more_content.data, more_content.items):
                 self.add_line(line, src[0], src[1])
 
-
     def alter_processed_doc(self, doc: list):
         """
         Can be used to alter the processed docstring per documenter.
         """
         return doc
 
+    def document_members(self, *args, **kwargs):
+        pass
 
-    def get_object_members(self, want_all):
+
+#############################################
+
+
+class MatModuleLevelDocumenter(MatlabDocumenter):
+    """
+    Specialized Documenter subclass for objects on module level (functions,
+    classes, scripts, mlapps).
+    """
+    supported_file_extensions = ['', '.m', 'mlapp']
+
+    def resolve_name(self, path: str, namespace: List[str], objpath: List[str], base: str):
+
+        file_path = self.src_path.joinpath(path if path else '', *namespace)
+
+        if file_path.is_dir():
+            modname = str(file_path)
+        else:
+            # if documenting a toplevel object without explicit path,
+            # it can be contained in another auto directive ...
+            modname = self.env.temp_data.get('autodoc:module')
+            if not modname:
+                modname = self.env.temp_data.get('mat:module')
+
+            if path or namespace:
+                file_path = Path(modname).joinpath(path, *namespace)
+                if file_path.is_dir():
+                    modname = str(file_path)
+                else:
+                    modname = None
+
+        return modname, objpath + [base]
+
+
+class MatClassLevelDocumenter(MatlabDocumenter):
+    """
+    Specialized Documenter subclass for objects on class level (methods,
+    attributes).
+    """
+    # def resolve_name(self, modname, parents, path, base):
+    def resolve_name(self, path: str, namespace: List[str], objpath: List[str], base: str):
+
+        if not objpath:
+
+            try:
+                clsname = self.object.cls.name
+            except:
+                 # if documenting a class-level object without path, there must be a current class, 
+                 # either from a parent auto directive or from a class directive.
+                clsname = self.env.temp_data.get('autodoc:class')
+                if not clsname:
+                    clsname = self.env.temp_data.get('mat:class')
+                if not clsname:
+                    return None, []
+            objpath = [clsname]
+
+        if path or namespace:
+            modname, _ = MatModuleLevelDocumenter.resolve_name(self, path, namespace, [], '')
+
+        else:
+            try: 
+                modname = self.object.cls.module
+            except:
+                # if the module name is still missing, get it like above
+                # ... else, it stays None, which means invalid
+                modname = self.env.temp_data.get('autodoc:module')
+                if not modname:
+                    modname = self.env.temp_data.get('mat:module')
+                if not modname:
+                    cls_path = self.env.app.mat_handles.get(objpath[0])[0]
+                    if cls_path:
+                        modname = str(Path(cls_path).parent)
+
+        return modname, objpath + [base]
+
+
+class MatMembersMixin:
+
+    def document_members(self, all_members: bool= False):
+        """Generate reST for member documentation.
+
+        If *all_members* is True, do all members, else those given by
+        *self.options.members*.
+        """
+        # set current namespace for finding members
+        self.env.temp_data['autodoc:module'] = self.modname
+        if self.objpath:
+            self.env.temp_data['autodoc:class'] = self.objpath[0]
+
+        want_all = all_members or self.options.inherited_members or self.options.members is ALL
+
+        # find out which members are documentable
+        members = self.get_object_members(want_all)
+        filtered_members = self.filter_members(members, want_all)
+
+        # document non-skipped members
+        memberdocumenters = []
+
+        for (membername, member) in filtered_members:
+
+            # give explicitly separated module name, so that members of inner classes can be documented
+            full_membername = '.'.join(self.objpath + [membername])
+
+            documenter_cls = DOCUMENTER_MAP.get(type(member))
+            if not documenter_cls:
+                logger.warning('{%s} could not document %s.' % (MAT_DOM, full_membername))
+                continue
+
+            documenter = documenter_cls(self.directive, full_membername, self.indent)
+            documenter.object = member
+            memberdocumenters.append(documenter)
+
+        #################################################################################
+        # Sort members
+
+        member_order = self.options.member_order or self.env.config.autodoc_member_order
+        if member_order == 'alphabetical':
+            memberdocumenters.sort(key=lambda e: e.object.name)
+
+        if member_order == 'groupwise':
+            # relies on stable sort to keep items in the same group sorted alphabetically
+            memberdocumenters.sort(key=lambda e: e.member_order)
+
+        elif member_order == 'bysource':
+            # sort by source order, by virtue of the module analyzer
+            
+            self_memberdocumenters, inherited_memberdocumenters = [], []
+            for documenter in memberdocumenters:
+                if documenter.object.cls is self.object:
+                    self_memberdocumenters.append(documenter)
+                else:
+                    inherited_memberdocumenters.append(documenter)
+            
+            # Show first the members of the class itself
+            self_memberdocumenters.sort(key=lambda e: e.object.index)
+
+            # Then show the inherited members, sorted alphabetically on the class name and then the index
+            inherited_memberdocumenters.sort(key=lambda e: (e.object.cls.name, e.object.index))
+
+            memberdocumenters = self_memberdocumenters + inherited_memberdocumenters
+
+        else:
+            logger.warning('{%s} cannot sort members by %s.' % (MAT_DOM, member_order))
+
+        for documenter in memberdocumenters:
+            documenter.generate(all_members=True)
+
+        # reset current objects
+        self.env.temp_data['autodoc:module'] = None
+        self.env.temp_data['autodoc:class'] = None
+
+
+    def get_object_members(self, *args, **kwargs):
         """Return `(members_check_module, members)` where `members` is a
         list of `(membername, member)` pairs of the members of *self.object*.
-
-        If *want_all* is True, return all members.  Else, only return those
-        members given by *self.options.members* (which may also be none).
         """
-        analyzed_member_names = set()
-        if self.analyzer:
-            attr_docs = self.analyzer.find_attr_docs()  # TODO already called in generate()
-            namespace = '.'.join(self.objpath)
-            for item in attr_docs.items():
-                if item[0][0] == namespace:
-                    analyzed_member_names.add(item[0][1])
 
-        if not want_all:
-            if not self.options.members:
-                return False, []
-            # specific members given
-            members = []
-            for mname in self.options.members:
-                try:
-                    members.append((mname, self.get_attr(self.object, mname)))
-                except AttributeError:
-                    if mname not in analyzed_member_names:
-                        logger.warning('missing attribute %s in object %s'
-                                            % (mname, self.fullname))
-        elif self.options.inherited_members:
-            # safe_getmembers() uses dir() which pulls in members from all
-            # base classes
-            members = inspect.get_members(self.object, attr_getter=self.get_attr)
+        # Get members
+        if self.options.members is ALL:
+            members = [(key, value) for key, value in self.object.members.items()]
         else:
-            # __dict__ contains only the members directly defined in
-            # the class (but get them via getattr anyway, to e.g. get
-            # unbound method objects instead of function objects);
-            # using keys() because apparently there are objects for which
-            # __dict__ changes while getting attributes
-            try:
-                obj_dict = self.get_attr(self.object, '__dict__')
-            except AttributeError:
-                members = []
+            members = []
+            for membername in self.options.members:
+                if membername in self.object.members:
+                    members.append((membername, self.object.members[membername]))
+                else:
+                    logger.warning(
+                        '{%s} missing member %s in object %s' % (MAT_DOM, membername, self.fullname)
+                    )
+
+        # Get inherited members
+        if self.options.inherited_members:
+            inherited_members, inherited_constructor = self.get_inherited_members(
+                self.object.bases, recursive=True
+            )
+            if not self.object.constructor:
+                self.object.constructor = inherited_constructor
+
+            if self.options.inherited_members is ALL:
+                members += [(key, value) for key, value in inherited_members.items()]
             else:
-                members = [(mname, self.get_attr(self.object, mname, None))
-                           for mname in list(obj_dict.keys())]
-        membernames = set(m[0] for m in members)
-        # add instance attributes from the analyzer
-        for aname in analyzed_member_names:
-            if aname not in membernames and \
-               (want_all or aname in self.options.members):
-                members.append((aname, INSTANCEATTR))
-        return False, sorted(members)
+                for membername in self.options.inherited_members:
+                    if membername in inherited_members:
+                        members.append((membername, inherited_members[membername]))
+                    else:
+                        logger.warning(
+                            '{%s} missing inherited member %s in object %s' %
+                            (MAT_DOM, membername, self.fullname)
+                        )
+
+        # Add constructor to members list
+        if self.object.constructor:
+            members.append((self.object.constructor.name, self.object.constructor))
+
+        # remove members given by exclude-members
+        if self.options.exclude_members:
+            members = [
+                (membername, member)
+                for (membername, member) in members if membername not in self.options.exclude_members
+            ]
+
+        return members
+
+
+    def get_inherited_members(self, bases: List[str], recursive: bool = True) -> dict:
+        """Returns the dict of members of a list of bases (superclasses). 
+        If the recursive option is enabled, the search will occur recursivly on the bases of the bases. 
+        """
+        members, constructor = {}, None
+        bases.reverse() # Reverse required for correct MRO
+        for base in bases:
+            if base in self.env.app.mat_handles:
+
+                # Multiple handles found, guessing by taking the longest common path
+                if len(self.env.app.mat_handles[base]) > 1:
+
+                    logger.warning(
+                        '{%s} multiple superclasses named {%s} found. Try to guess which one to use by longest common path'
+                        % (MAT_DOM, base)
+                    )
+
+                    common_path_length = [
+                        len(os.path.commonpath([self.modname, p]))
+                        for p in self.env.app.mat_handles[base]
+                    ]
+                    path = self.env.app.mat_handles[common_path_length.index(
+                        max(common_path_length)
+                    )]
+                else:
+                    path = self.env.app.mat_handles[base][0]
+
+                obj = self.env.app.mat_objects[path]
+
+                # Get inherited members first, then update with new members according to MRO
+                if recursive:
+                    inherited_members, inherited_constructor = self.get_inherited_members(obj.bases)
+                else:
+                    inherited_members, inherited_constructor = {}, None
+                members.update(inherited_members)
+                members.update(obj.members)
+
+                # Get constructor according to MRO
+                if not obj.constructor:
+                    obj.constuctor = inherited_constructor
+                if obj.constructor:
+                    constructor = obj.constructor
+
+            else:
+                logger.warning(
+                    '{%s} cannot find superclass {%s}. Are you sure it is under the matlab_src_dir?'
+                    % (MAT_DOM, base)
+                )
+
+        return members, constructor
+
 
     def filter_members(self, members, want_all):
         """Filter the given member list.
@@ -342,404 +563,122 @@ class MatlabDocumenter(PyDocumenter):
         The user can override the skipping decision by connecting to the
         ``autodoc-skip-member`` event.
         """
-        def member_is_special(member):
-            # TODO implement special matlab methods: disp, subsref, etc.
-            return False
 
-        def member_is_private(member):
-            attrs = self.get_attr(member, 'attrs', None)
-            if attrs:
-                access = attrs.get('Access', None)
-                get_access = attrs.get('GetAccess', None)
-                if access:
-                    if access == 'private':
-                        return True
-                elif get_access:
-                    if get_access == 'private':
-                        return True
-                return False
+        def keep_member(membername, member_option, has_doc):
+            if member_option is ALL or (isinstance(member_option, set) and membername in member_option):
+                return has_doc or self.options.undoc_members
             else:
                 return False
 
-        def member_is_protected(member):
-            attrs = self.get_attr(member, 'attrs', None)
-            if attrs:
-                access = attrs.get('Access', None)
-                get_access = attrs.get('GetAccess', None)
-                if access:
-                    if access == 'protected':
-                        return True
-                elif get_access:
-                    if get_access == 'protected':
-                        return True
-                return False
-            else:
-                return False
-
-        def member_is_hidden(member):
-            attrs = self.get_attr(member, 'attrs', None)
-            if attrs:
-                hidden = attrs.get('Hidden', None)
-                # It is either None or True
-                if hidden:
-                    return True
-                return False
-            else:
-                return False
-
-        def member_is_friend(member):
-            attrs = self.get_attr(member, 'attrs', None)
-            if attrs:
-                access = attrs.get('Access', None)
-                if access:
-                    # Only friend meta classes define access lists
-                    if isinstance(access, list):
-                        return True
-                    elif access:
-                        # This is a friend meta class
-                        return access[0] == '?'
-                return False
-            else:
-                return False
-
-        def member_is_friend_of(member, friends):
-            attrs = self.get_attr(member, 'attrs', None)
-            if attrs:
-                access = attrs.get('Access', None)
-                if not isinstance(access, list):
-                    access = [access]
-                for has_access in access:
-                    if has_access in friends:
-                        return True
-                else:
-                    return False
-            else:
-                return False
-
-        ret = []
-
-        # search for members in source code too
-        namespace = '.'.join(self.objpath)  # will be empty for modules
-
-        if self.analyzer:
-            attr_docs = self.analyzer.find_attr_docs()
-        else:
-            attr_docs = {}
+        filtered_members = []
 
         # process members and determine which to skip
         for (membername, member) in members:
             # if isattr is True, the member is documented as an attribute
-            isattr = False
+            has_doc = bool(member.docstring)
 
-            doc = self.get_attr(member, '__doc__', None)
-            # if the member __doc__ is the same as self's __doc__, it's just
-            # inherited and therefore not the member's doc
-            cls = self.get_attr(member, '__class__', None)
-            if cls:
-                cls_doc = self.get_attr(cls, '__doc__', None)
-                if cls_doc == doc:
-                    doc = None
-            has_doc = bool(doc)
-
-            keep = False
-            if want_all and member_is_special(member):
-                # special methods
-                if self.options.special_members is ALL:
+            if want_all:
+                if self.member_is_private(member):
+                    keep = keep_member(membername, self.options.private_members, has_doc)
+                elif self.member_is_protected(member):
+                    keep = keep_member(membername, self.options.protected_members, has_doc)
+                elif self.member_is_hidden(member):
+                    keep = keep_member(membername, self.options.hidden_members, has_doc)
+                elif self.member_is_special(member):
+                    keep = keep_member(membername, self.options.special_members, has_doc)
+                elif self.member_is_friend(member):
+                    keep = keep_member(membername, self.options.friend_members, has_doc)
+                else:
                     keep = has_doc or self.options.undoc_members
-                elif self.options.special_members and \
-                    self.options.special_members is not ALL and \
-                        membername in self.options.special_members:
-                    keep = has_doc or self.options.undoc_members
-            elif want_all and member_is_private(member):
-                # ignore private members
-                if self.options.private_members is ALL:
-                    keep = has_doc or self.options.undoc_members
-                elif self.options.private_members and \
-                    self.options.private_members is not ALL and \
-                        membername in self.options.private_members:
-                    keep = has_doc or self.options.undoc_members
-            elif want_all and member_is_protected(member):
-                # ignore protected members
-                if self.options.protected_members is ALL:
-                    keep = has_doc or self.options.undoc_members
-                elif self.options.protected_members and \
-                    self.options.protected_members is not ALL and \
-                        membername in self.options.protected_members:
-                    keep = has_doc or self.options.undoc_members
-            elif want_all and member_is_hidden(member):
-                # ignore hidden members
-                if self.options.hidden_members is ALL:
-                    keep = has_doc or self.options.undoc_members
-                elif self.options.hidden_members and \
-                    self.options.hidden_members is not ALL and \
-                        membername in self.options.hidden_members:
-                    keep = has_doc or self.options.undoc_members
-            elif want_all and member_is_friend(member):
-                # ignore friend members
-                if self.options.friend_members is ALL:
-                    keep = has_doc or self.options.undoc_members
-                elif self.options.friend_members and \
-                        self.options.friend_members is not ALL and \
-                        member_is_friend_of(member, self.options.friend_members):
-                    keep = has_doc or self.options.undoc_members
-            elif (namespace, membername) in attr_docs:
-                # keep documented attributes
-                keep = True
-                isattr = True
             else:
-                # ignore undocumented members if :undoc-members: is not given
                 keep = has_doc or self.options.undoc_members
 
-            # give the user a chance to decide whether this member
-            # should be skipped
+            if keep:
+                filtered_members.append((membername, member))
+
+            # give the user a chance to decide whether this member should be skipped
             if self.env.app:
                 # let extensions preprocess docstrings
                 skip_user = self.env.app.emit_firstresult(
-                    'autodoc-skip-member', self.objtype, membername, member,
-                    not keep, self.options)
+                    'autodoc-skip-member', self.objtype, membername, member, not keep, self.options)
                 if skip_user is not None:
                     keep = not skip_user
 
-            if keep:
-                ret.append((membername, member, isattr))
+        return filtered_members
 
-        return ret
-
-    def document_members(self, all_members=False):
-        """Generate reST for member documentation.
-
-        If *all_members* is True, do all members, else those given by
-        *self.options.members*.
-        """
-        # set current namespace for finding members
-        self.env.temp_data['autodoc:module'] = self.modname
-        if self.objpath:
-            self.env.temp_data['autodoc:class'] = self.objpath[0]
-
-        want_all = all_members or self.options.inherited_members or self.options.members is ALL
-
-        # find out which members are documentable
-        members_check_module, members = self.get_object_members(want_all)
-
-        # remove members given by exclude-members
-        if self.options.exclude_members:
-            members = [
-                (membername, member)
-                for (membername, member) in members if membername not in self.options.exclude_members
-            ]
-
-        # document non-skipped members
-        memberdocumenters = []
-        matdocumenters = [cls for (name, cls) in self.documenters.items() if name.startswith('mat:')]
-
-        for (mname, member, isattr) in self.filter_members(members, want_all):
-
-            # TODO This should just be a one to one mapping
-
-            classes = [cls for cls in matdocumenters if cls.can_document_member(member, mname, isattr, self)]
-
-            if not classes: # don't know how to document this member
-                continue
-
-            # prefer the documenter with the highest priority
-            classes.sort(key=lambda cls: cls.priority)
-            # give explicitly separated module name, so that members
-            # of inner classes can be documented
-            full_mname = '.'.join(self.objpath + [mname])
-            documenter = classes[-1](self.directive, full_mname, self.indent)
-            memberdocumenters.append((documenter, isattr))
-
-        #################################################################################
-        # Sort members
-
-        member_order = self.options.member_order or self.env.config.autodoc_member_order
-        if member_order == 'groupwise':
-            # sort by group; relies on stable sort to keep items in the
-            # same group sorted alphabetically
-            memberdocumenters.sort(key=lambda e: e[0].member_order)
-        elif member_order == 'bysource' and self.analyzer:
-            # sort by source order, by virtue of the module analyzer
-            tagorder = self.analyzer.tagorder
-
-            def keyfunc(entry):
-                fullname = entry[0].name
-                return tagorder.get(fullname, len(tagorder))
-
-            memberdocumenters.sort(key=keyfunc)
-
-        for documenter, isattr in memberdocumenters:
-            documenter.generate(
-                all_members=True, real_modname=self.real_modname, check_module=members_check_module and not isattr
-            )
-
-        # reset current objects
-        self.env.temp_data['autodoc:module'] = None
-        self.env.temp_data['autodoc:class'] = None
-
-
-class MatModuleDocumenter(MatlabDocumenter, PyModuleDocumenter):
-
-    def parse_name(self):
-        ret = super().parse_name()
-        if self.args or self.retann:
-            logger.warning('signature arguments or return annotation '
-                                'given for automodule %s' % self.fullname)
-        return ret
-
-    def add_directive_header(self, sig):
-        super().add_directive_header(sig)
-
-        # add some module-specific options
-        if self.options.synopsis:
-            self.add_line(
-                '   :synopsis: ' + self.options.synopsis, '<autodoc>')
-        if self.options.platform:
-            self.add_line(
-                '   :platform: ' + self.options.platform, '<autodoc>')
-        if self.options.deprecated:
-            self.add_line('   :deprecated:', '<autodoc>')
-
-    def get_object_members(self, want_all):
-        if want_all:
-            if not hasattr(self.object, '__all__'):
-                # for implicit module members, check __module__ to avoid
-                # documenting imported objects
-                return True, self.object.safe_getmembers()
-            else:
-                memberlist = self.object.__all__
+    @staticmethod
+    def member_is_special(member: Union[MatMethod, MatProperty]):
+        '''Checks if a method is special (overwriting default behavior)
+        See https://www.mathworks.com/help/matlab/matlab_oop/methods-that-modify-default-behavior.html
+        '''
+        if isinstance(member, MatMethod) and member.name in {
+            'cat', 'horzcat', 'vertcat', 'empty', 'display', 'disp', 'double', 'char', 'loadobj',
+            'saveobj', 'permute', 'transpose', 'ctranspose', 'reshape', 'repmat', 'isscalar',
+            'isvector', 'ismatrix', 'isempty'
+        }:
+            return True
         else:
-            memberlist = self.options.members or []
-        ret = []
-        for mname in memberlist:
-            try:
-                attr = self.get_attr(self.object, mname, None)
-                if attr:
-                    ret.append((mname, attr))
-                else:
-                    raise AttributeError
-            except AttributeError:
-                logger.warning(
-                    'missing attribute mentioned in :members: or __all__: '
-                    'module %s, attribute %s' % (
-                    sphinx.util.inspect.safe_getattr(self.object, '__name__', '???'), mname))
-        return False, ret
+            return False
 
-
-class MatModuleLevelDocumenter(MatlabDocumenter):
-    """
-    Specialized Documenter subclass for objects on module level (functions,
-    classes, scripts, mlapps).
-    """
-    supported_file_extensions = ['', '.m', 'mlapp']
-
-    def resolve_name(self, path: str, base: str, namespace: list):
-
-        if self.env.config.matlab_src_dir is None:
-            # The module is the same folder as the source document
-            modname = str(Path(self.directive._reporter.source).parent)
+    @staticmethod
+    def member_is_private(member: Union[MatMethod, MatProperty]):
+        '''Checks if a method or property's Access or GetAccess is private.'''
+        if member.attrs.get('Access') == 'private' or member.attrs.get('GetAccess') == 'private':
+            return True
         else:
-            # Start looking for the module from the matlab source dir
-            src_path = Path(self.env.config.matlab_src_dir)
-            file_path = src_path.joinpath(path, *namespace)
+            return False
 
-            if file_path.is_dir():
-                modname = str(file_path)
+    @staticmethod
+    def member_is_protected(member: Union[MatMethod, MatProperty]):
+        '''Checks if a method or property's Access or GetAccess is protected.'''
+        if member.attrs.get('Access') == 'protected' or member.attrs.get('GetAccess') == 'protected':
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def member_is_hidden(member: Union[MatMethod, MatProperty]):
+        '''Checks if a method or property is hidden.'''
+        return True if member.attrs.get('Hidden') else False
+
+    @staticmethod
+    def member_is_friend(member: Union[MatMethod, MatProperty], friends: Optional[list] = None):
+        '''Checks if a method or property has an access list and that it a member of the "friend_members".
+        See https://www.mathworks.com/help/matlab/matlab_oop/selective-access-to-class-methods.html
+        '''
+        access_list = []
+        access = member.attrs.get('Access')
+        getacces = member.attrs.get('GetAccess')
+        access_list += access if isinstance(access, list) else []
+        access_list += getacces if isinstance(getacces, list) else []
+
+        if access_list:
+
+            if friends is ALL:
+                return True
+            elif isinstance(friends, list):
+                return True if any([cls[1:] in access_list for cls in friends]) else False
             else:
-                # if documenting a toplevel object without explicit path,
-                # it can be contained in another auto directive ...
-                modname = self.env.temp_data.get('autodoc:module')
-                if not modname:
-                    modname = self.env.temp_data.get('mat:module')
-
-                if path or namespace:
-                    file_path = Path(modname).joinpath(path, *namespace)
-                    if file_path.is_dir():
-                        modname = str(file_path)
-                    else:
-                        modname = None
-
-        return modname, namespace + [base]
+                return False
+        else:
+            return False
 
 
-class MatClassLevelDocumenter(MatlabDocumenter):
-    """
-    Specialized Documenter subclass for objects on class level (methods,
-    attributes).
-    """
-    def resolve_name(self, modname, parents, path, base):
-        if modname is None:
-            if path:
-                mod_cls = path.rstrip('.')
-            else:
-                mod_cls = None
-                # if documenting a class-level object without path,
-                # there must be a current class, either from a parent
-                # auto directive ...
-                mod_cls = self.env.temp_data.get('autodoc:class')
-                # ... or from a class directive
-                if mod_cls is None:
-                    mod_cls = self.env.temp_data.get('mat:class')
-                # ... if still None, there's no way to know
-                if mod_cls is None:
-                    return None, []
-            modname, _,  cls = mod_cls.rpartition('.')
-            parents = [cls]
-            # if the module name is still missing, get it like above
-            if not modname:
-                modname = self.env.temp_data.get('autodoc:module')
-            if not modname:
-                modname = self.env.temp_data.get('mat:module')
-            # ... else, it stays None, which means invalid
-        return modname, parents + [base]
-
-
-class MatDocstringSignatureMixin(object):
+class MatArgumentMixin:
     """
     Mixin for FunctionDocumenter and MethodDocumenter to provide the
     feature of reading the signature from the docstring.
     """
 
-    def _find_signature(self):
-        docstrings = MatlabDocumenter.get_doc(self)
-        if len(docstrings) != 1:
-            return
-        doclines = docstrings[0]
-        setattr(self, '__new_doclines', doclines)
-        if not doclines:
-            return
-        # match first line of docstring against signature RE
-        match = mat_ext_sig_re.match(doclines[0])
-        if not match:
-            return
-        exmod, path, base, args, retann = match.groups()
-        # the base name must match ours
-        if not self.objpath or base != self.objpath[-1]:
-            return
-        # re-prepare docstring to ignore indentation after signature
-        docstrings = MatlabDocumenter.get_doc(self)
-        doclines = docstrings[0]
-        # ok, now jump over remaining empty lines and set the remaining
-        # lines as the new doclines
-        i = 1
-        while i < len(doclines) and not doclines[i].strip():
-            i += 1
-        setattr(self, '__new_doclines', doclines[i:])
-        return args, retann
-
-    def get_doc(self):
-        lines = getattr(self, '__new_doclines', None)
-        if lines is not None:
-            return [lines]
-        return MatlabDocumenter.get_doc(self)
-
     def format_signature(self):
-        if self.args is None and self.env.config.autodoc_docstring_signature:
-            # only act if a signature is not explicitly given already, and if
-            # the feature is enabled
-            result = self._find_signature()
-            if result is not None:
-                self.args, self.retann = result
-        return MatlabDocumenter.format_signature(self)
+        if self.env.config.autodoc_docstring_signature:
+            sig = f'({", ".join(self.object.args)})' if self.object.args else ''
+            if self.object.retv:
+                sig += f' -> [{", ".join(self.object.retv)}]'
+        else:
+            sig = ''
+
+        return sig
 
     def alter_processed_doc(self, doc: list):
 
@@ -855,47 +794,65 @@ class MatDocstringSignatureMixin(object):
         return newDoc
 
 
-class MatFunctionDocumenter(MatDocstringSignatureMixin, MatModuleLevelDocumenter):
-    """
-    Specialized Documenter subclass for functions.
-    """
-    objtype = 'function'
-    member_order = 30
-    option_spec = {'invert-conf-argument-docstring': bool_option}
+class MatModuleDocumenter(MatMembersMixin, MatlabDocumenter, PyModuleDocumenter):
 
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return type(member) is MatFunction
+    def parse_name(self):
 
-    def format_args(self):
-        if self.object.args:
-            return '(' + ', '.join(self.object.args) + ')'
+        if self.env.config.matlab_src_dir is None:
+            # The module is the same folder as the source document
+            src_path = Path(self.directive._reporter.source).parent
         else:
-            return None
+            # Start looking for the module from the matlab source dir
+            src_path = Path(self.env.config.matlab_src_dir)
 
-    def document_members(self, *args, **kwargs):
-        pass
+        mod_path = src_path / Path(self.name)
 
+        if mod_path.is_dir():
+            self.modname = str(mod_path)
+            return True
+        else:
+            return False
 
-def make_baseclass_links(obj):
-    """ Returns list of base class links """
-    obj_bases = obj.__bases__
-    links = []
-    if len(obj_bases):
-        base_classes = obj_bases.items()
-        for b, v in base_classes:
-            if not v:
-                links.append(':class:`%s`' % b)
+    def add_directive_header(self, sig):
+        super().add_directive_header(sig)
+
+        # add some module-specific options
+        if self.options.synopsis:
+            self.add_line(
+                '   :synopsis: ' + self.options.synopsis, '<autodoc>')
+        if self.options.platform:
+            self.add_line(
+                '   :platform: ' + self.options.platform, '<autodoc>')
+        if self.options.deprecated:
+            self.add_line('   :deprecated:', '<autodoc>')
+
+    def get_object_members(self, want_all):
+        if want_all:
+            if not hasattr(self.object, '__all__'):
+                # for implicit module members, check __module__ to avoid
+                # documenting imported objects
+                return True, self.object.safe_getmembers()
             else:
-                mod_name = v.__module__
-                if mod_name.startswith('+'):
-                    links.append(':class:`+%s`' % b)
+                memberlist = self.object.__all__
+        else:
+            memberlist = self.options.members or []
+        ret = []
+        for membername in memberlist:
+            try:
+                attr = self.get_attr(self.object, membername, None)
+                if attr:
+                    ret.append((membername, attr))
                 else:
-                    links.append(':class:`%s.%s`' % (mod_name, b))
-    return links
+                    raise AttributeError
+            except AttributeError:
+                logger.warning(
+                    'missing attribute mentioned in :members: or __all__: '
+                    'module %s, attribute %s' % (
+                    sphinx.util.inspect.safe_getattr(self.object, '__name__', '???'), membername))
+        return False, ret
 
 
-class MatClassDocumenter(MatModuleLevelDocumenter):
+class MatClassDocumenter(MatMembersMixin, MatModuleLevelDocumenter):
     """
     Specialized Documenter subclass for classes.
     """
@@ -903,136 +860,88 @@ class MatClassDocumenter(MatModuleLevelDocumenter):
     member_order = 20
     option_spec = {
         'members': members_option, 'undoc-members': bool_option,
-        'noindex': bool_option, 'inherited-members': bool_option,
-        'show-inheritance': bool_option, 'member-order': identity,
-        'exclude-members': members_option, 'special-members': members_option,
+        'noindex': bool_option, 'show-inheritance': bool_option,
+        'member-order': member_order_option, 'inherited-members': members_option,
+        'exclude-members': exclude_members_option, 'special-members': members_option,
         'private-members': members_option, 'protected-members': members_option,
-        'hidden-members': members_option,
-        'friend-members': members_option,
+        'hidden-members': members_option, 'friend-members': members_option,
     }
 
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return isinstance(member, MatClass)
-
-    def import_object(self):
-        ret = super().import_object()
-        # if the class is documented under another name, document it
-        # as data/attribute
-        if ret:
-            if hasattr(self.object, '__name__'):
-                self.doc_as_attr = (self.objpath[-1] != self.object.__name__)
-            else:
-                self.doc_as_attr = True
-        return ret
-
-    def format_args(self):
-        # for classes, the relevant signature is the "constructor" method,
-        # which has the same name as the class definition
-        initmeth = self.get_attr(self.object, self.object.name, None)
-        # classes without constructor method, default constructor or
-        # constructor written in C?
-        if initmeth is None or not isinstance(initmeth, MatMethod):
-            return None
-        if initmeth.args:
-            if initmeth.args[0] == 'obj':
-                return '(' + ', '.join(initmeth.args[1:]) + ')'
-            else:
-                return '(' + ', '.join(initmeth.args) + ')'
-        else:
-            return None
-
     def format_signature(self):
-        if self.doc_as_attr:
-            return ''
 
         # get constructor method signature from docstring
-        if self.env.config.autodoc_docstring_signature:
-            # only act if the feature is enabled
-            init_doc = MatMethodDocumenter(self.directive, self.object.name)
-            init_doc.object = self.get_attr(self.object, self.object.name, None)
-            init_doc.objpath = [self.object.name]
-            result = init_doc._find_signature()
-            if result is not None:
-                # use args only for Class signature
-                return '(%s)' % result[0]
+        constructor = self.object.methods.get(self.object.name)
+        if self.env.config.autodoc_docstring_signature and constructor:
+            sig = f'({", ".join(constructor.args)})'
+        else:
+            sig = ''
 
-        return super().format_signature()
+        return sig
 
     def add_directive_header(self, sig):
-        if self.doc_as_attr:
-            self.directivetype = 'attribute'
+
         super(MatlabDocumenter, self).add_directive_header(sig)
 
         # add inheritance info, if wanted
-        if not self.doc_as_attr and self.options.show_inheritance:
+        if self.options.show_inheritance:
             self.add_line('', '<autodoc>')
-            base_class_links = make_baseclass_links(self.object)
+
+            base_class_links = []
+            if len(self.object.bases):
+
+                for base in self.object.bases:
+                    base_namespace = base.split('.')
+                    if len(base_namespace) == 1:
+                        base_directive = base
+                    else:
+                        base_directive = '.'.join(['+%s' % n for n in base_namespace[:-1]] + [base_namespace[-1]])
+                    base_class_links.append(':class:`%s`' % base_directive)
+
             if base_class_links:
                 self.add_line(_('   Bases: %s') % ', '.join(base_class_links), '<autodoc>')
 
     def get_doc(self):
-        content = self.env.config.autoclass_content
+
+        class_docstring = self.object.docstring
+
+        if self.object.name in self.object.methods:
+            constructor_docstring = self.object.methods[self.object.name].docstring
+        else:
+            constructor_docstring = None
 
         docstrings = []
-        attrdocstring = self.get_attr(self.object, '__doc__', None)
-        if attrdocstring:
-            docstrings.append(attrdocstring)
+        content = self.env.config.autoclass_content
 
-        # for classes, what the "docstring" is can be controlled via a
-        # config value; the default is only the class docstring
-        if content in ('both', 'init'):
-            # get __init__ method document from __init__.__doc__
-            if self.env.config.autodoc_docstring_signature:
-                # only act if the feature is enabled
-                init_doc = MatMethodDocumenter(self.directive, self.object.name)
-                init_doc.object = self.get_attr(self.object, self.object.name,
-                                                None)
-                init_doc.objpath = [self.object.name]
-                init_doc._find_signature()  # this effects to get_doc() result
-                initdocstring = '\n'.join(
-                    ['\n'.join(l) for l in init_doc.get_doc()])
-            else:
-                initdocstring = self.get_attr(
-                    self.get_attr(self.object, self.object.name, None),
-                    '__doc__')
-            # for new-style classes, no __init__ means default __init__
-            if initdocstring == object.__init__.__doc__:
-                initdocstring = None
-            if initdocstring:
-                if content == 'init':
-                    docstrings = [initdocstring]
-                else:
-                    docstrings.append(initdocstring)
+        if content == 'class' and class_docstring:
+            docstrings.append(class_docstring)
+        elif content == "constructor" and constructor_docstring:
+            docstrings.append(constructor_docstring)
+        else: # if content == 'both'
+            if class_docstring and constructor_docstring:
+                docstrings.append(class_docstring)
+                docstrings.append('Constructor\n-----------')
+                docstrings.append(constructor_docstring)
+            elif class_docstring:
+                docstrings.append(class_docstring)
+            elif constructor_docstring:
+                docstrings.append(constructor_docstring)
+
         doc = []
         for docstring in docstrings:
             doc.append(sphinx.util.docstrings.prepare_docstring(docstring))
         return doc
 
-    def add_content(self, more_content, **kwargs):
-        if self.doc_as_attr:
-            classname = sphinx.util.inspect.safe_getattr(self.object, '__name__', None)
-            if classname:
-                content = ViewList(
-                    [_('alias of :class:`%s`') % classname], source='')
-                super().add_content(content, get_doc=False)
-        else:
-            super().add_content(more_content)
 
-    def document_members(self, *args, **kwargs):
-        if self.doc_as_attr:
-            return
-        super().document_members(*args, **kwargs)
+class MatFunctionDocumenter(MatArgumentMixin, MatModuleLevelDocumenter):
+    """
+    Specialized Documenter subclass for functions.
+    """
+    objtype = 'function'
+    member_order = 30
+    option_spec = {'invert-conf-argument-docstring': bool_option}
 
 
-class MatDataDocumenter(MatModuleLevelDocumenter, PyDataDocumenter):
-
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return isinstance(member, MatScript)
-
-
-class MatMethodDocumenter(MatDocstringSignatureMixin, MatClassLevelDocumenter):
+class MatMethodDocumenter(MatArgumentMixin, MatClassLevelDocumenter):
     """
     Specialized Documenter subclass for methods (normal, static and class).
     """
@@ -1040,9 +949,6 @@ class MatMethodDocumenter(MatDocstringSignatureMixin, MatClassLevelDocumenter):
     member_order = 50
     priority = 1  # must be more than FunctionDocumenter
 
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return type(member) is MatMethod
 
     def import_object(self):
         ret = super().import_object()
@@ -1054,22 +960,15 @@ class MatMethodDocumenter(MatDocstringSignatureMixin, MatClassLevelDocumenter):
             self.directivetype = 'method'
         return ret
 
-    def format_args(self):
-        if self.object.args:
-            if self.object.args[0] == 'obj':
-                return '('+ ', '.join(self.object.args[1:]) + ')'
-            else:
-                return '('+ ', '.join(self.object.args) + ')'
-
     def document_members(self, *args, **kwargs):
         pass
 
 
-class MatAttributeDocumenter(MatClassLevelDocumenter):
+class MatPropertyDocumenter(MatClassLevelDocumenter):
     """
-    Specialized Documenter subclass for attributes.
+    Specialized Documenter subclass for properties.
     """
-    objtype = 'attribute'
+    objtype = 'property'
     member_order = 60
     option_spec = dict(MatModuleLevelDocumenter.option_spec)
     option_spec["annotation"] = annotation_option
@@ -1077,10 +976,6 @@ class MatAttributeDocumenter(MatClassLevelDocumenter):
     # must be higher than the MethodDocumenter, else it will recognize
     # some non-data descriptors as methods
     priority = 10
-
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return type(member) is MatProperty
 
     def document_members(self, *args, **kwargs):
         pass
@@ -1119,18 +1014,16 @@ class MatAttributeDocumenter(MatClassLevelDocumenter):
             self.add_line('   :annotation: %s' % self.options.annotation,
                           '<autodoc>')
 
+
 class MatScriptDocumenter(MatModuleLevelDocumenter):
     """
     Specialized Documenter subclass for scripts.
     """
     objtype = 'script'
 
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return isinstance(member, MatScript)
-
     def document_members(self, *args, **kwargs):
         pass
+
 
 class MatApplicationDocumenter(MatModuleLevelDocumenter):
     """
@@ -1138,9 +1031,16 @@ class MatApplicationDocumenter(MatModuleLevelDocumenter):
     """
     objtype = 'application'
 
-    @classmethod
-    def can_document_member(cls, member, *args, **kwargs):
-        return isinstance(member, MatApplication)
-
     def document_members(self, *args, **kwargs):
         pass
+
+
+DOCUMENTER_MAP = {
+    MatModule: MatModuleDocumenter,
+    MatClass: MatClassDocumenter,
+    MatFunction: MatFunctionDocumenter,
+    MatMethod: MatMethodDocumenter,
+    MatProperty: MatPropertyDocumenter,
+    MatScript: MatScriptDocumenter,
+    MatApplication: MatApplicationDocumenter
+}
