@@ -833,9 +833,23 @@ def setup(app):
     app.mat_handles = defaultdict(list)
     for filepath in app.mat_objects.keys():
         try: 
-            _, namespace, objpath, _ = doc.parse_matlab_path(filepath)
-            app.mat_handles['.'.join([name[1:] for name in namespace] + [objpath[0]])].append(filepath)
+            namespace_path, base = mat_file_path_re.match(filepath.strip()).groups()
+            namespace = re.split(r'[/\\\.]+', namespace_path.strip(r'/\\\.')) if namespace_path else []
+            app.mat_handles['.'.join([name[1:] for name in namespace] + [base])].append(filepath)
         except Exception:
             logger.debug('[%s] Could not index %s.' % (MAT_DOM, filepath))
 
     return {'parallel_read_safe':False}
+
+mat_file_path_re = re.compile(
+    r'''^
+        (?:
+            (?:[A-Z]\:\\{1,2})          # Windows absolute path
+            |(?:\.{1-2}[/\\]{1,2})      # Unix path
+        )
+        (?:\w+[/\\]{1,2})+              # path down
+        ((?:[@+]\w+[/\\]{1,2})*)        # namespace
+        (\w+)                           # filename
+        \.(?:\w+)                       # extension
+        $''', re.VERBOSE
+)
